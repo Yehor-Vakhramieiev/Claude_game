@@ -2,6 +2,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from effects import Effect, DrawEffect, SkipEffect, CoverEffect, ChangeSuitEffect
+
 
 class CardRank(StrEnum):
     SIX = "6"
@@ -43,28 +45,28 @@ class Card(BaseModel):
         default_factory=lambda data: DEFAULT_VALUES.get(data["rank"]),
     )
 
-    def apply_effect(self):
-        pass
+    def apply_effect(self) -> tuple[Effect] | tuple[Effect, Effect] | None:
+        return
 
 
 class SixCard(Card):
-    def apply_effect(self):
-        pass
+    def apply_effect(self) -> tuple[Effect]:
+        return (CoverEffect(),)
 
 
 class SevenCard(Card):
-    def apply_effect(self):
-        pass
+    def apply_effect(self) -> tuple[Effect, Effect]:
+        return SkipEffect(), DrawEffect(amount=2)
 
 
 class EightCard(Card):
     def apply_effect(self):
-        pass
+        return (DrawEffect(amount=1),)
 
 
 class JackCard(Card):
     def apply_effect(self):
-        pass
+        return (ChangeSuitEffect(),)
 
 
 class JackSpadesCard(JackCard):
@@ -75,12 +77,12 @@ class KingHeartsCard(Card):
     value = 50
 
     def apply_effect(self):
-        pass
+        return (DrawEffect(amount=5),)
 
 
 class AceCard(Card):
     def apply_effect(self):
-        pass
+        return (SkipEffect(),)
 
 
 CARD_REGISTRY = {
