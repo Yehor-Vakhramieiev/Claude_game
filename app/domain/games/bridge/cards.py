@@ -1,5 +1,7 @@
 from enum import StrEnum
 
+from pydantic import BaseModel, Field
+
 
 class CardRank(StrEnum):
     SIX = "6"
@@ -33,13 +35,10 @@ DEFAULT_VALUES = {
 }
 
 
-class Card:
-    value: int
-
-    def __init__(self, rank: CardRank, suit: CardSuit):
-        self.rank = rank
-        self.suit = suit
-        self.value = DEFAULT_VALUES.get(rank)
+class Card(BaseModel):
+    rank: CardRank
+    suit: CardSuit
+    value: int = Field(default_factory=lambda data: DEFAULT_VALUES.get(data["rank"]))
 
     def apply_effect(self):
         pass
@@ -69,15 +68,11 @@ class JackCard(Card):
 
 
 class JackSpadesCard(JackCard):
-    def __init__(self, rank: CardRank, suit: CardSuit):
-        super().__init__(rank, suit)
-        self.value = 40
+    value = 40
 
 
 class KingHeartsCard(Card):
-    def __init__(self, rank: CardRank, suit: CardSuit):
-        super().__init__(rank, suit)
-        self.value = 40
+    value = 50
 
     def apply_effect(self):
         pass
