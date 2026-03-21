@@ -1,6 +1,11 @@
 from pydantic import BaseModel, Field
 
-from cards import Card, CardSuit, CardRank, CARD_REGISTRY
+from app.domain.games.bridge.entities.cards import (
+    Card,
+    CardSuit,
+    CardRank,
+    CARD_REGISTRY,
+)
 
 
 class Deck(BaseModel):
