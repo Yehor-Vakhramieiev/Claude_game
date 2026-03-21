@@ -1,14 +1,20 @@
-from pydantic import BaseModel
-from enum import StrEnum
+from pydantic import BaseModel, Field
 
 
-class EffectType(StrEnum):
-    DRAW = "draw"
-    SKIP = "skip"
-    CHANGE_SUIT = "change_suit"
-    COVER = "cover"
+class DrawEffect(BaseModel):
+    amount: int = Field(ge=1, le=5)
 
 
-class Effect(BaseModel):
-    effect_type: EffectType
-    amount: int
+class SkipEffect(BaseModel):
+    amount: int = 1
+
+
+class ChangeSuitEffect(BaseModel):
+    pass
+
+
+class CoverEffect(BaseModel):
+    pass
+
+
+Effect = DrawEffect | SkipEffect | ChangeSuitEffect | CoverEffect
