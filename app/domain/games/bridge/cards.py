@@ -97,5 +97,3 @@ CARD_REGISTRY = {
     (CardRank.KING, CardSuit.HEARTS): KingHeartsCard,
     (CardRank.ACE, None): AceCard,
 }
-
-CARD_REGISTRY.get()
