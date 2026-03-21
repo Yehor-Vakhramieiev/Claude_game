@@ -38,13 +38,13 @@ DEFAULT_VALUES = {
 class Card(BaseModel):
     rank: CardRank
     suit: CardSuit
-    value: int = Field(default_factory=lambda data: DEFAULT_VALUES.get(data["rank"]))
+    value: int = Field(
+        frozen=True,
+        default_factory=lambda data: DEFAULT_VALUES.get(data["rank"]),
+    )
 
     def apply_effect(self):
         pass
-
-    def get_value(self):
-        return self.value
 
 
 class SixCard(Card):
