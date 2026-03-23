@@ -29,7 +29,7 @@ class Deck(BaseModel):
     discard_pile: list[Card] = Field(default_factory=list)
     flips_count: int = 0
 
-    def shuffle(self, amount_to_save: int = 1):
+    def shuffle(self, amount_to_save: int = 1) -> None:
         if len(self.discard_pile) <= amount_to_save:
             random.shuffle(self.draw_pile)
             return
@@ -38,3 +38,9 @@ class Deck(BaseModel):
         self.discard_pile = self.discard_pile[-amount_to_save:]
         self.flips_count += 1
         self.shuffle(amount_to_save)
+
+    def draw_card(self, amount: int) -> list[Card]:
+        return [self.draw_pile.pop() for _ in range(amount)]
+
+    def discard_card(self, cards: list[Card]) -> None:
+        self.discard_pile.extend(cards)
