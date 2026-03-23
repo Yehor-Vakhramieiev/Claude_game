@@ -2,7 +2,7 @@ import random
 
 from pydantic import BaseModel, Field
 
-from app.domain.games.bridge.entities.cards import (
+from .cards import (
     Card,
     CardSuit,
     CardRank,
