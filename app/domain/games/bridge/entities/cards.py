@@ -2,7 +2,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from effects import Effect, DrawEffect, SkipEffect, CoverEffect, ChangeSuitEffect
+from .effects import Effect, DrawEffect, SkipEffect, CoverEffect, ChangeSuitEffect
 
 
 class CardRank(StrEnum):
@@ -70,11 +70,11 @@ class JackCard(Card):
 
 
 class JackSpadesCard(JackCard):
-    value = 40
+    value: int = 40
 
 
 class KingHeartsCard(Card):
-    value = 50
+    value: int = 50
 
     def apply_effect(self):
         return (DrawEffect(amount=5),)
