@@ -4,6 +4,14 @@ from pydantic import BaseModel, Field, field_validator
 from .cards import Card, restore_from_data
 
 
+class CardNotRemovedError(Exception):
+    pass
+
+
+class CardAlreadyInHandError(Exception):
+    pass
+
+
 class Player(BaseModel):
     id: str
     name: str
