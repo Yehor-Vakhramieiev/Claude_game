@@ -1,6 +1,7 @@
 from .deck import Deck
 from .cards import Card
 from .effects import Effect, SkipEffect, CoverEffect, DrawEffect, ChangeSuitEffect
+from .player import Player
 
 __all__ = (
     "Deck",
@@ -10,4 +11,5 @@ __all__ = (
     "CoverEffect",
     "DrawEffect",
     "ChangeSuitEffect",
+    "Player",
 )
