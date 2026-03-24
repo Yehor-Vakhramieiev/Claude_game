@@ -3,12 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from .cards import (
-    Card,
-    CardSuit,
-    CardRank,
-    CARD_REGISTRY,
-)
+from .cards import Card, CardSuit, CardRank, CARD_REGISTRY, restore_from_data
 
 
 def create_standard_36() -> list[Card]:
@@ -33,26 +28,7 @@ class Deck(BaseModel):
     @field_validator("draw_pile", "discard_pile", mode="before")
     @classmethod
     def restore_specific_fields(cls, pile_data: Any) -> list[Card]:
-        if not pile_data:
-            return []
-
-        if isinstance(pile_data[0], Card):
-            return pile_data
-
-        restored_cards = []
-        for card_dict in pile_data:
-            rank = CardRank(card_dict["rank"])
-            suit = CardSuit(card_dict["suit"])
-
-            card_class = (
-                CARD_REGISTRY.get((rank, suit))
-                or CARD_REGISTRY.get((rank, None))
-                or Card
-            )
-
-            restored_cards.append(card_class(rank=rank, suit=suit))
-
-        return restored_cards
+        return restore_from_data(pile_data)
 
     def shuffle(self, amount_to_save: int = 1) -> None:
         if len(self.discard_pile) <= amount_to_save:

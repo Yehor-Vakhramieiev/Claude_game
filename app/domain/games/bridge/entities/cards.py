@@ -1,4 +1,5 @@
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -85,7 +86,7 @@ class AceCard(Card):
         return (SkipEffect(),)
 
 
-CARD_REGISTRY = {
+CARD_REGISTRY: dict[tuple[CardRank, CardSuit | None], type[Card]] = {
     (CardRank.SIX, None): SixCard,
     (CardRank.SEVEN, None): SevenCard,
     (CardRank.EIGHT, None): EightCard,
@@ -94,3 +95,24 @@ CARD_REGISTRY = {
     (CardRank.KING, CardSuit.HEARTS): KingHeartsCard,
     (CardRank.ACE, None): AceCard,
 }
+
+
+def restore_from_data(pile_data: Any) -> list[Card]:
+    if not pile_data:
+        return []
+
+    if isinstance(pile_data[0], Card):
+        return pile_data
+
+    restored_cards = []
+    for card_dict in pile_data:
+        rank = CardRank(card_dict["rank"])
+        suit = CardSuit(card_dict["suit"])
+
+        card_class = (
+            CARD_REGISTRY.get((rank, suit)) or CARD_REGISTRY.get((rank, None)) or Card
+        )
+
+        restored_cards.append(card_class(rank=rank, suit=suit))
+
+    return restored_cards
