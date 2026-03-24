@@ -65,7 +65,8 @@ class Deck(BaseModel):
         self.shuffle(amount_to_save)
 
     def draw_card(self, amount: int) -> list[Card]:
-        return [self.draw_pile.pop() for _ in range(amount)]
+        amount_to_draw = len(self.draw_pile) if amount > len(self.draw_pile) else amount
+        return [self.draw_pile.pop() for _ in range(amount_to_draw)]
 
     def discard_card(self, cards: list[Card]) -> None:
         self.discard_pile.extend(cards)
