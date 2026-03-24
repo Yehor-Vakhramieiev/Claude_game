@@ -9,7 +9,7 @@ class Player(BaseModel):
     name: str
     hand: list[Card] = Field(default_factory=list)
 
-    @field_validator("hand")
+    @field_validator("hand", mode="before")
     @classmethod
     def restore_hand(cls, data: Any) -> list[Card]:
         return restore_from_data(data)
