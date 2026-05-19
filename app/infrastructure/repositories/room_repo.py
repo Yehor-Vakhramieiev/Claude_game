@@ -1,3 +1,5 @@
+import asyncio
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -8,7 +10,9 @@ from app.domain.room.room import Room
 _ROOM_KEY = "room:{}"
 _ROOMS_SET = "rooms:all"
 _LOCK_KEY = "lock:room:{}"
-_LOCK_TIMEOUT = 10  # seconds
+_LOCK_TIMEOUT = 10      # seconds before auto-expire
+_LOCK_WAIT = 5.0        # max seconds to wait for the lock
+_LOCK_POLL = 0.05       # polling interval
 
 
 class RoomRepository:
@@ -54,11 +58,26 @@ class RoomRepository:
 
     @asynccontextmanager
     async def lock(self, room_id: str) -> AsyncGenerator[None, None]:
-        lock = self._redis.lock(
-            _LOCK_KEY.format(room_id),
-            timeout=_LOCK_TIMEOUT,
-            blocking=True,
-            blocking_timeout=5,
-        )
-        async with lock:
+        """
+        Distributed lock via SET NX EX — compatible with fakeredis (no Lua/EVALSHA needed).
+        Uses a unique token so only the owner can release.
+        """
+        key = _LOCK_KEY.format(room_id)
+        token = str(uuid.uuid4())
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + _LOCK_WAIT
+
+        while True:
+            acquired = await self._redis.set(key, token, nx=True, ex=_LOCK_TIMEOUT)
+            if acquired:
+                break
+            if loop.time() >= deadline:
+                raise TimeoutError(f"Could not acquire lock for room {room_id}")
+            await asyncio.sleep(_LOCK_POLL)
+
+        try:
             yield
+        finally:
+            current = await self._redis.get(key)
+            if current == token:
+                await self._redis.delete(key)

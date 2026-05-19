@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter
 
 from app.domain.bridge.entities import CardRank, CardSuit
 
@@ -20,7 +20,9 @@ class DrawCardMessage(BaseModel):
     action: Literal["draw_card"]
 
 
-IncomingMessage = Annotated[
+# TypeAdapter is required for Annotated union types — they have no .model_validate_json()
+_IncomingUnion = Annotated[
     PlayCardsMessage | DrawCardMessage,
     Field(discriminator="action"),
 ]
+incoming_message_adapter = TypeAdapter(_IncomingUnion)

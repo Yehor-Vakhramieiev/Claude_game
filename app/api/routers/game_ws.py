@@ -1,13 +1,10 @@
 import json
 
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
-from fastapi_users.db import SQLAlchemyUserDatabase
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from redis.asyncio import Redis
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_redis
-from app.api.users import UserManager, get_jwt_strategy
-from app.domain.bridge.entities import Card, CardSuit
+from app.api.deps import get_redis, get_ws_user
+from app.domain.bridge.entities import Card
 from app.domain.bridge.exceptions import (
     GameNotStartedError,
     InvalidMoveError,
@@ -15,25 +12,11 @@ from app.domain.bridge.exceptions import (
 )
 from app.domain.bridge.game import GameStatus
 from app.infrastructure.db.models import User
-from app.infrastructure.db.session import get_async_session
 from app.infrastructure.repositories.room_repo import RoomRepository
 from app.infrastructure.ws_manager import ws_manager
-from app.schemas.ws import DrawCardMessage, IncomingMessage, PlayCardsMessage
+from app.schemas.ws import DrawCardMessage, PlayCardsMessage, incoming_message_adapter
 
 router = APIRouter()
-
-
-async def _authenticate(token: str, session: AsyncSession) -> User | None:
-    strategy = get_jwt_strategy()
-    user_db = SQLAlchemyUserDatabase(session, User)
-    user_manager = UserManager(user_db)
-    try:
-        user = await strategy.read_token(token, user_manager)
-    except Exception:
-        return None
-    if user is None or not user.is_active:
-        return None
-    return user
 
 
 def _find_cards(hand: list[Card], requests: list) -> list[Card] | None:
@@ -62,23 +45,24 @@ async def _send_error(ws: WebSocket, detail: str) -> None:
 async def ws_game(
     room_id: str,
     ws: WebSocket,
-    token: str = Query(...),
-    session: AsyncSession = Depends(get_async_session),
+    ws_user: User | None = Depends(get_ws_user),
     redis: Redis = Depends(get_redis),
 ) -> None:
-    user = await _authenticate(token, session)
-    if user is None:
+    if ws_user is None:
+        await ws.accept()
         await ws.close(code=4001)
         return
 
-    user_id = str(user.id)
+    user_id = str(ws_user.id)
     repo = RoomRepository(redis)
 
     room = await repo.get(room_id)
     if room is None:
+        await ws.accept()
         await ws.close(code=4004)
         return
     if user_id not in room.player_ids:
+        await ws.accept()
         await ws.close(code=4003)
         return
 
@@ -89,7 +73,7 @@ async def ws_game(
         while True:
             raw = await ws.receive_text()
             try:
-                msg = IncomingMessage.model_validate_json(raw)
+                msg = incoming_message_adapter.validate_json(raw)
             except Exception:
                 await _send_error(ws, "Invalid message format")
                 continue

@@ -1,8 +1,13 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
+from fastapi_users.db import SQLAlchemyUserDatabase
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.users import current_active_user as _current_active_user  # noqa: F401 — re-exported
+from app.api.users import UserManager, current_active_user as _current_active_user  # noqa: F401
+from app.api.users import get_jwt_strategy
 from app.domain.room.room import Room
+from app.infrastructure.db.models import User
+from app.infrastructure.db.session import get_async_session
 from app.infrastructure.redis.client import get_redis as _get_redis
 from app.infrastructure.repositories.room_repo import RoomRepository
 
@@ -25,3 +30,20 @@ async def get_room(
     if room is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
     return room
+
+
+async def get_ws_user(
+    token: str = Query(...),
+    session: AsyncSession = Depends(get_async_session),
+) -> User | None:
+    """JWT auth for WebSocket endpoints (token passed as query param)."""
+    strategy = get_jwt_strategy()
+    user_db = SQLAlchemyUserDatabase(session, User)
+    user_manager = UserManager(user_db)
+    try:
+        user = await strategy.read_token(token, user_manager)
+    except Exception:
+        return None
+    if user is None or not user.is_active:
+        return None
+    return user
