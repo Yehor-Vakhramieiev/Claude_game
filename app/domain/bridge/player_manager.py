@@ -3,18 +3,7 @@ import random
 from pydantic import BaseModel, Field, model_validator
 
 from app.domain.bridge.entities import Player, Card
-
-
-class PlayerNotFoundError(Exception):
-    pass
-
-
-class RoomIsFullError(Exception):
-    pass
-
-
-class RoomIsEmptyError(Exception):
-    pass
+from app.domain.bridge.exceptions import PlayerNotFoundError, RoomIsFullError, RoomIsEmptyError
 
 
 class PlayerManager(BaseModel):
@@ -39,8 +28,15 @@ class PlayerManager(BaseModel):
     @property
     def current_player_id(self) -> str:
         if not self.turn_order:
-            raise ValueError(f"{self.__class__.__name__} cannot have no turn order")
+            raise RoomIsEmptyError("Room is empty")
         return self.turn_order[self.current_player_index]
+
+    @property
+    def next_player_id(self) -> str:
+        if not self.turn_order:
+            raise RoomIsEmptyError("Room is empty")
+        next_index = (self.current_player_index + 1) % len(self.turn_order)
+        return self.turn_order[next_index]
 
     def add_player(self, player: Player) -> None:
         if len(self.players) >= self.max_players:
@@ -69,15 +65,11 @@ class PlayerManager(BaseModel):
             self.current_player_index = 0
             raise RoomIsEmptyError("Room is empty")
 
+        if delete_player_index < self.current_player_index:
+            self.current_player_index -= 1
+
         if self.current_player_index >= len(self.turn_order):
             self.current_player_index = 0
-            return
-
-        self.current_player_index = (
-            self.current_player_index
-            if self.current_player_index <= delete_player_index
-            else self.current_player_index - 1
-        )
 
     def get_player(self, player_id: str) -> Player:
         if player_id not in self.players:
@@ -92,7 +84,7 @@ class PlayerManager(BaseModel):
         player = self.get_player(player_id)
         player.remove_cards(data)
 
-    def advance_move(self):
+    def advance_move(self) -> int:
         if not self.turn_order:
             raise RoomIsEmptyError("Room is empty")
 
@@ -108,10 +100,8 @@ class PlayerManager(BaseModel):
 
             if self.skips.get(player_id, 0) > 0:
                 self.skips[player_id] -= 1
-
                 if self.skips[player_id] == 0:
                     del self.skips[player_id]
-
                 continue
 
             break
