@@ -1,5 +1,5 @@
-from app.domain.bridge.entities import Player, Deck
 import pytest
+from app.domain.bridge.entities import Player, Deck, CardAlreadyInHandError, CardNotRemovedError
 
 
 def test_player_functionality():
@@ -23,8 +23,6 @@ def test_player_functionality():
 
 
 def test_player_adding_cards():
-    from app.domain.bridge.entities.player import CardAlreadyInHandError
-
     player = Player(id="1", name="")
     deck = Deck()
 
@@ -45,8 +43,6 @@ def test_player_adding_cards():
 
 
 def test_player_deleting_cards():
-    from app.domain.bridge.entities.player import CardNotRemovedError
-
     player = Player(id="1", name="")
     deck = Deck()
 
