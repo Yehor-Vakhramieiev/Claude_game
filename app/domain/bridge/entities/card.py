@@ -20,7 +20,7 @@ class CardRank(StrEnum):
 
 class CardSuit(StrEnum):
     HEARTS = "hearts"
-    CLUBS = "club"
+    CLUBS = "clubs"
     DIAMONDS = "diamonds"
     SPADES = "spades"
 

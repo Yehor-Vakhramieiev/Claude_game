@@ -40,7 +40,7 @@ class PlayerManager(BaseModel):
     def current_player_id(self) -> str:
         if not self.turn_order:
             raise ValueError(f"{self.__class__.__name__} cannot have no turn order")
-        return self.turn_order[self.current_index]
+        return self.turn_order[self.current_player_index]
 
     def add_player(self, player: Player) -> None:
         if len(self.players) >= self.max_players:
@@ -64,13 +64,12 @@ class PlayerManager(BaseModel):
         self.players.pop(player.id)
         self.turn_order.remove(player.id)
         self.skips.pop(player.id, None)
-        self.max_players -= 1
 
         if not self.turn_order:
             self.current_player_index = 0
             raise RoomIsEmptyError("Room is empty")
 
-        if self.current_player_index >= self.max_players:
+        if self.current_player_index >= len(self.turn_order):
             self.current_player_index = 0
             return
 
@@ -79,6 +78,11 @@ class PlayerManager(BaseModel):
             if self.current_player_index <= delete_player_index
             else self.current_player_index - 1
         )
+
+    def get_player(self, player_id: str) -> Player:
+        if player_id not in self.players:
+            raise PlayerNotFoundError(f"Player {player_id} is not registered")
+        return self.players[player_id]
 
     def give_cards_to_player(self, player_id: str, data: list[Card] | Card) -> None:
         player = self.get_player(player_id)
@@ -108,9 +112,6 @@ class PlayerManager(BaseModel):
                 if self.skips[player_id] == 0:
                     del self.skips[player_id]
 
-                continue
-
-            if current_player_index == self.current_player_index and self.skips:
                 continue
 
             break
