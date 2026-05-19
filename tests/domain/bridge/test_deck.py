@@ -1,4 +1,4 @@
-from app.domain.games.bridge.entities import *
+from app.domain.bridge.entities import *
 
 
 def test_create_deck():
@@ -58,7 +58,7 @@ def test_deck_shuffle():
 
 
 def test_card_effects():
-    from app.domain.games.bridge.entities.deck import create_standard_36
+    from app.domain.bridge.entities.deck import create_standard_36
 
     cards = create_standard_36()
 

@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from .cards import Card, CardSuit, CardRank, CARD_REGISTRY, restore_from_data
+from .card import Card, CardSuit, CardRank, CARD_REGISTRY, restore_from_data
 
 
 def create_standard_36() -> list[Card]:
