@@ -7,12 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routers import auth, rooms
 from app.core.config import settings
 from app.infrastructure.db.session import create_db_tables
+from app.infrastructure.redis.client import close_pool, create_pool
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    create_pool()
     await create_db_tables()
     yield
+    await close_pool()
 
 
 app = FastAPI(

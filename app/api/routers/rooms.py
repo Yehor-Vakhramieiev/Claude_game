@@ -33,7 +33,7 @@ async def create_room(
     user_id = str(user.id)
     room = Room(name=data.name, host_id=user_id, max_players=data.max_players)
     room.player_ids.append(user_id)
-    repo.save(room)
+    await repo.save(room)
     return _to_response(room)
 
 
@@ -42,7 +42,7 @@ async def list_rooms(
     repo: RoomRepository = Depends(get_room_repo),
     _: User = Depends(current_active_user),
 ) -> list[RoomResponse]:
-    return [_to_response(r) for r in repo.all()]
+    return [_to_response(r) for r in await repo.all()]
 
 
 @router.get("/{room_id}", response_model=RoomResponse)
@@ -68,8 +68,12 @@ async def join_room(
     if len(room.player_ids) >= room.max_players:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Room is full")
 
-    room.player_ids.append(user_id)
-    repo.save(room)
+    async with repo.lock(room.id):
+        room = await repo.get(room.id)
+        if room is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Room not found")
+        room.player_ids.append(user_id)
+        await repo.save(room)
     return _to_response(room)
 
 
@@ -84,16 +88,21 @@ async def leave_room(
     if user_id not in room.player_ids:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Not in this room")
 
-    room.player_ids.remove(user_id)
+    async with repo.lock(room.id):
+        room = await repo.get(room.id)
+        if room is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Room not found")
 
-    if not room.player_ids:
-        repo.delete(room.id)
-        return _to_response(room)
+        room.player_ids.remove(user_id)
 
-    if room.host_id == user_id:
-        room.host_id = room.player_ids[0]
+        if not room.player_ids:
+            await repo.delete(room.id)
+            return _to_response(room)
 
-    repo.save(room)
+        if room.host_id == user_id:
+            room.host_id = room.player_ids[0]
+
+        await repo.save(room)
     return _to_response(room)
 
 
@@ -108,19 +117,24 @@ async def start_game(
     if room.status != "waiting":
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Game already started")
 
-    pm = PlayerManager(max_players=room.max_players)
-    game = Game(player_manager=pm)
+    async with repo.lock(room.id):
+        room = await repo.get(room.id)
+        if room is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Room not found")
 
-    for player_id in room.player_ids:
-        game.join(Player(id=player_id, name=player_id))
+        pm = PlayerManager(max_players=room.max_players)
+        game = Game(player_manager=pm)
 
-    try:
-        game.start()
-    except NotEnoughPlayersError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e))
+        for player_id in room.player_ids:
+            game.join(Player(id=player_id, name=player_id))
 
-    room.game = game
-    repo.save(room)
+        try:
+            game.start()
+        except NotEnoughPlayersError as e:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e))
+
+        room.game = game
+        await repo.save(room)
     return _to_response(room)
 
 
@@ -132,4 +146,4 @@ async def delete_room(
 ) -> None:
     if str(user.id) != room.host_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Only the host can delete the room")
-    repo.delete(room.id)
+    await repo.delete(room.id)
