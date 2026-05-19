@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import auth, rooms
+from app.api.routers import auth, game_ws, rooms
 from app.core.config import settings
 from app.infrastructure.db.session import create_db_tables
 from app.infrastructure.redis.client import close_pool, create_pool
@@ -34,6 +34,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(rooms.router, prefix="/rooms", tags=["rooms"])
+app.include_router(game_ws.router, prefix="/ws/rooms", tags=["game-ws"])
 
 
 @app.get("/health", tags=["system"])

@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import current_active_user, get_room, get_room_repo
@@ -8,6 +10,7 @@ from app.domain.bridge.player_manager import PlayerManager
 from app.domain.room.room import Room
 from app.infrastructure.db.models import User
 from app.infrastructure.repositories.room_repo import RoomRepository
+from app.infrastructure.ws_manager import ws_manager
 from app.schemas.room import RoomCreate, RoomResponse
 
 router = APIRouter()
@@ -22,6 +25,10 @@ def _to_response(room: Room) -> RoomResponse:
         max_players=room.max_players,
         status=room.status,
     )
+
+
+def _room_json(room: Room) -> dict:
+    return json.loads(room.model_dump_json())
 
 
 @router.post("", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
@@ -74,6 +81,12 @@ async def join_room(
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Room not found")
         room.player_ids.append(user_id)
         await repo.save(room)
+
+    await ws_manager.broadcast(room.id, repo.redis, {
+        "event": "player_joined",
+        "player_id": user_id,
+        "room": _room_json(room),
+    })
     return _to_response(room)
 
 
@@ -103,6 +116,12 @@ async def leave_room(
             room.host_id = room.player_ids[0]
 
         await repo.save(room)
+
+    await ws_manager.broadcast(room.id, repo.redis, {
+        "event": "player_left",
+        "player_id": user_id,
+        "room": _room_json(room),
+    })
     return _to_response(room)
 
 
@@ -135,6 +154,11 @@ async def start_game(
 
         room.game = game
         await repo.save(room)
+
+    await ws_manager.broadcast(room.id, repo.redis, {
+        "event": "game_started",
+        "room": _room_json(room),
+    })
     return _to_response(room)
 
 

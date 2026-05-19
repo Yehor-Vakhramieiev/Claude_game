@@ -15,6 +15,10 @@ class RoomRepository:
     def __init__(self, redis: Redis) -> None:
         self._redis = redis
 
+    @property
+    def redis(self) -> Redis:
+        return self._redis
+
     async def get(self, room_id: str) -> Room | None:
         data = await self._redis.get(_ROOM_KEY.format(room_id))
         if data is None:

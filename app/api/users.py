@@ -32,14 +32,14 @@ async def get_user_manager(
 _bearer_transport = BearerTransport(tokenUrl="/auth/jwt/login")
 
 
-def _get_jwt_strategy() -> JWTStrategy:
+def get_jwt_strategy() -> JWTStrategy:
     return JWTStrategy(secret=settings.secret_key, lifetime_seconds=3600)
 
 
 auth_backend = AuthenticationBackend(
     name="jwt",
     transport=_bearer_transport,
-    get_strategy=_get_jwt_strategy,
+    get_strategy=get_jwt_strategy,
 )
 
 fastapi_users = FastAPIUsers[User, uuid.UUID](get_user_manager, [auth_backend])
