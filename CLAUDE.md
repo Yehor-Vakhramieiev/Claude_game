@@ -9,7 +9,8 @@ Multiplayer card game **Bridge** (similar to 101 / Mau-Mau rules), implemented a
 - Python 3.14, FastAPI, Pydantic v2, SQLAlchemy 2 (async), asyncpg
 - FastAPI Users 15.0.5 (JWT bearer auth)
 - Redis with hiredis (state storage + Pub/Sub)
-- pytest (81 tests, all passing)
+- fakeredis (testing), httpx (testing)
+- pytest (116 tests, all passing)
 - uv (package manager)
 - Planned: Docker + Nginx, React/Vue frontend
 
@@ -84,24 +85,33 @@ Games/
 │   │   └── ws_manager.py            # WebSocketManager (local WS fan-out via Redis Pub/Sub)
 │   │
 │   ├── api/
-│   │   ├── users.py                 # FastAPI Users setup (UserManager, auth_backend, fastapi_users)
-│   │   ├── deps.py                  # get_redis, get_room_repo, get_room (async), current_active_user
+│   │   ├── users.py                 # FastAPI Users setup (UserManager, auth_backend, fastapi_users, get_jwt_strategy)
+│   │   ├── deps.py                  # get_redis, get_room_repo, get_room, current_active_user, get_ws_user
 │   │   └── routers/
 │   │       ├── auth.py              # Mounts FastAPI Users routers under /auth
-│   │       └── rooms.py             # Rooms CRUD: create, list, get, join, leave, start, delete
+│   │       ├── rooms.py             # Rooms CRUD: create, list, get, join, leave, start, delete
+│   │       └── game_ws.py           # WebSocket /ws/rooms/{room_id}: play_cards, draw_card
 │   │
 │   └── schemas/
 │       ├── auth.py                  # UserRead, UserCreate, UserUpdate
-│       └── room.py                  # RoomCreate, RoomResponse
+│       ├── room.py                  # RoomCreate, RoomResponse
+│       └── ws.py                    # PlayCardsMessage, DrawCardMessage, incoming_message_adapter (TypeAdapter)
 │
 └── tests/
-    └── domain/
-        └── bridge/
-            ├── test_deck.py          # 8 tests
-            ├── test_player.py        # 4 tests
-            ├── test_player_manager.py# 20 tests
-            ├── test_rules.py         # 17 tests
-            └── test_game.py          # 27 tests (effects, cover, bridge call, scoring, round end)
+    ├── domain/
+    │   └── bridge/
+    │       ├── test_deck.py              # 8 tests
+    │       ├── test_player.py            # 4 tests
+    │       ├── test_player_manager.py    # 20 tests
+    │       ├── test_rules.py             # 17 tests
+    │       └── test_game.py              # 27 tests (effects, cover, bridge call, scoring, round end)
+    ├── infrastructure/
+    │   ├── test_room_repo.py             # 18 tests (get, all, save, delete, lock)
+    │   └── test_ws_manager.py            # 14 tests (connect, disconnect, broadcast, fan_out)
+    └── api/
+        ├── conftest.py                   # fake_redis, client, switch_user, USER1/2/3/4 fixtures
+        ├── test_rooms.py                 # 20 tests (CRUD, join, leave, start, delete)
+        └── test_game_ws.py               # 15 tests (auth guards, game actions, broadcast)
 ```
 
 ---
@@ -124,6 +134,40 @@ All effects (`DrawEffect`, `SkipEffect`, `CoverEffect`, `ChangeSuitEffect`) are 
 - `can_play_cards()` only allows rank=SIX
 - `draw_card()` does **not** advance the turn — the player keeps drawing until they have a 6 to cover
 
+### Distributed lock implementation
+**Critical:** `redis-py`'s built-in `Lock` uses Lua scripts (`EVALSHA`) which `fakeredis` doesn't support without `lupa`. The lock in `room_repo.py` uses a **custom `SET NX EX` + `GET/DEL`** pattern instead:
+```python
+acquired = await self._redis.set(key, token, nx=True, ex=_LOCK_TIMEOUT)
+# On release:
+current = await self._redis.get(key)
+if current == token:   # only release if we still own it (token check)
+    await self._redis.delete(key)
+```
+Do NOT replace this with `redis.lock()` — it will break tests.
+
+### TypeAdapter for WS message parsing
+`app/schemas/ws.py` uses `Annotated[Union, Field(discriminator=...)]` which has no `.model_validate_json()`.
+Must use `TypeAdapter`:
+```python
+incoming_message_adapter = TypeAdapter(_IncomingUnion)
+# Usage:
+msg = incoming_message_adapter.validate_json(raw)
+```
+
+### WebSocket auth
+`get_ws_user` in `deps.py` reads JWT from `?token=` query param (browsers can't send custom WS headers).
+It returns `User | None` — never raises — so the WS handler can do `accept() + close(4001)` on `None`.
+This signature is essential for test overrideability via `app.dependency_overrides`.
+
+### Starlette WS close pattern
+Must call `ws.accept()` before `ws.close(code)` for the close code to be delivered:
+```python
+if ws_user is None:
+    await ws.accept()
+    await ws.close(code=4001)
+    return
+```
+
 ### Redis architecture (multi-worker)
 ```
 Worker 1 (uvicorn)       Worker 2 (uvicorn)
@@ -132,7 +176,7 @@ Worker 1 (uvicorn)       Worker 2 (uvicorn)
               Redis:
     room:{id}        → JSON (Pydantic Room state)
     rooms:all        → Set of all room IDs
-    lock:room:{id}   → Distributed mutex (10s timeout)
+    lock:room:{id}   → Distributed mutex (custom SET NX EX)
     channel:room:{id}→ Pub/Sub event channel
 ```
 
@@ -145,13 +189,12 @@ Worker 1 (uvicorn)       Worker 2 (uvicorn)
 6. Release lock
 7. Each worker's `WebSocketManager` has a background asyncio task subscribed to `channel:room:{id}` and fans out to local WS clients
 
-**`RoomRepository.lock(room_id)`** is an async context manager using `redis.asyncio.Redis.lock()`.
-
 ### Authentication
 FastAPI Users 15.0.5 with UUID user IDs and JWT bearer token.
 - Login: `POST /auth/jwt/login` → returns `access_token`
 - Register: `POST /auth/register`
-- All rooms endpoints require `Authorization: Bearer <token>`
+- All rooms/WS endpoints require auth (`Authorization: Bearer <token>` for HTTP, `?token=` for WS)
+- `get_jwt_strategy` is public (exported from `app/api/users.py`) — needed by `get_ws_user` in deps.py
 
 ---
 
@@ -160,7 +203,7 @@ FastAPI Users 15.0.5 with UUID user IDs and JWT bearer token.
 |---|---|---|
 | `room:{id}` | String | `Room.model_dump_json()` |
 | `rooms:all` | Set | All room IDs |
-| `lock:room:{id}` | String (lock) | Distributed mutex |
+| `lock:room:{id}` | String | Custom mutex token |
 | `channel:room:{id}` | Pub/Sub | JSON event payloads |
 
 ---
@@ -178,7 +221,68 @@ FastAPI Users 15.0.5 with UUID user IDs and JWT bearer token.
 | POST | `/rooms/{id}/leave` | Leave room |
 | POST | `/rooms/{id}/start` | Start game (host only) |
 | DELETE | `/rooms/{id}` | Delete room (host only) |
+| WS | `/ws/rooms/{id}?token=` | Game WebSocket |
 | GET | `/health` | Health check |
+
+---
+
+## WebSocket protocol
+
+```json
+// client → server
+{"action": "play_cards", "cards": [{"rank": "7", "suit": "hearts"}]}
+{"action": "play_cards", "cards": [...], "declared_suit": "clubs"}  // for Jack
+{"action": "draw_card"}
+
+// server → all clients in room (broadcast via ws_manager)
+{"event": "room_snapshot", "room": {...}}           // on connect
+{"event": "player_played", "player_id": "...", "cards": [...], "declared_suit": null, "room": {...}}
+{"event": "player_drew", "player_id": "...", "count": 1, "room": {...}}
+{"event": "round_ended", "winner_id": "...", "scores": {...}, "room": {...}}
+{"event": "game_over", "scores": {...}, "room": {...}}
+{"event": "player_joined", "player_id": "...", "room": {...}}   // from rooms.py
+{"event": "player_left", "player_id": "...", "room": {...}}     // from rooms.py
+{"event": "game_started", "room": {...}}                        // from rooms.py
+{"event": "error", "detail": "..."}                             // error response
+```
+
+WS close codes:
+- `4001` — unauthenticated
+- `4003` — not a member of this room
+- `4004` — room not found
+
+---
+
+## Test structure
+
+All tests use `asyncio.run()` (not pytest-anyio) for simplicity.
+
+**`tests/api/conftest.py`** key fixtures:
+- `fake_redis` — `fakeredis.FakeAsyncRedis(decode_responses=True)`, fresh per test
+- `client` — `TestClient(app)` with DB startup mocked, `get_redis` overridden to `fake_redis`, auth overridden to `USER1`
+- `reset_ws_manager` — autouse fixture that clears `ws_manager._connections` and `ws_manager._listeners` between tests
+- `switch_user(user)` — changes `current_active_user` and `get_ws_user` dependency overrides mid-test
+
+**Infrastructure tests** (`tests/infrastructure/`) use `asyncio.run()` + inner `async def _()`:
+- `test_room_repo.py` — 18 tests covering all CRUD + lock behavior
+- `test_ws_manager.py` — 14 tests; WS objects mocked with `AsyncMock()`
+
+**Important test pattern for WS broadcast tests:**
+```python
+await manager.connect("r1", ws, redis)
+await asyncio.sleep(0)   # REQUIRED: let listener subscribe before broadcasting
+await manager.broadcast("r1", redis, payload)
+await asyncio.sleep(0.05)  # let fan_out deliver
+ws.send_text.assert_called_once()
+```
+
+**Important test pattern for WS close code tests:**
+```python
+with client.websocket_connect(ws_url(room_id)) as ws:
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        ws.receive_text()  # raises AFTER server does accept+close
+assert exc_info.value.code == 4001
+```
 
 ---
 
@@ -197,7 +301,7 @@ ALLOWED_ORIGINS=["http://localhost:3000","http://localhost:5173"]
 
 ```bash
 uv run uvicorn main:app --reload          # dev
-uv run pytest                             # tests (81 passing)
+uv run pytest                             # tests (116 passing)
 ```
 
 Requires PostgreSQL and Redis running locally (or via Docker).
@@ -209,41 +313,20 @@ No Alembic migrations yet — `create_all` is fine for development.
 ## What's done ✅
 
 1. Full domain layer — entities, effects, player manager, rules, game orchestrator
-2. 81 passing unit tests (domain only, no infra deps)
+2. 76 passing domain unit tests (no infra deps)
 3. FastAPI Users auth (JWT, PostgreSQL, UUID users)
-4. Rooms REST API (create/list/get/join/leave/start/delete)
+4. Rooms REST API (create/list/get/join/leave/start/delete) — 20 tests
 5. Redis infrastructure layer:
-   - Async Redis-backed `RoomRepository` with distributed locking
-   - `WebSocketManager` with Redis Pub/Sub fan-out for cross-worker events
+   - Async Redis-backed `RoomRepository` with custom distributed lock — 18 tests
+   - `WebSocketManager` with Redis Pub/Sub fan-out for cross-worker events — 14 tests
    - Connection pool lifecycle in FastAPI lifespan
+6. WebSocket game endpoint `/ws/rooms/{room_id}` — 15 tests
+   - Auth via `?token=` query param
+   - `play_cards` and `draw_card` actions
+   - Broadcasts game events to all room members
 
 ## What's left 🔜
 
-### Next: WebSocket game endpoints
-Add `/ws/rooms/{room_id}` WebSocket endpoint. Suggested message protocol:
-
-```json
-// client → server
-{"action": "play_cards", "cards": [{"rank": "7", "suit": "hearts"}]}
-{"action": "draw_card"}
-{"action": "play_cards", "cards": [...], "declared_suit": "clubs"}  // for Jack
-
-// server → all clients in room (via ws_manager.broadcast)
-{"event": "game_state", "room": {...}}
-{"event": "player_played", "player_id": "...", "cards": [...]}
-{"event": "player_drew", "player_id": "...", "count": 1}
-{"event": "round_ended", "winner_id": "...", "scores": {...}}
-{"event": "game_over", "winner_id": "...", "scores": {...}}
-```
-
-The WS handler should:
-1. Authenticate via token query param (`?token=<jwt>`)
-2. Call `ws_manager.connect(room_id, ws, redis)` on connect
-3. Listen for incoming messages in a loop
-4. Acquire `repo.lock(room_id)`, load room, call `game.play_cards()` or `game.draw_card()`, save, publish event, release lock
-5. Call `ws_manager.disconnect(room_id, ws)` on disconnect/error
-
-### After WebSocket
 - Docker + Nginx config (multi-worker uvicorn behind Nginx reverse proxy)
 - Alembic migrations (replace `create_all` with proper migrations)
 - 145/245 burn rule in `game._end_round()`
@@ -260,3 +343,6 @@ The WS handler should:
 - **`CardSuit.CLUBS = "clubs"` (not "club"):** Was a bug in an earlier version, already fixed.
 - **`rooms:all` set + individual keys:** `RoomRepository.all()` fetches all IDs from the set then pipelines GETs. If a `room:{id}` key expires but the ID is still in the set, `all()` silently skips `None` results. This is intentional — no phantom rooms.
 - **Distributed lock scope:** Only `join`, `leave`, and `start` re-read inside the lock (to avoid TOCTOU). `create_room` and `delete_room` don't need it because they operate on a new/existing-exclusively-owned resource.
+- **fakeredis Pub/Sub:** Works with same `FakeAsyncRedis` instance shared across connect/broadcast calls. Requires `await asyncio.sleep(0)` after `connect()` to let the listener task subscribe before the first broadcast.
+- **`app.dependency_overrides` and WS connections:** Overrides are evaluated per-request. Changing `get_ws_user` override mid-test doesn't affect an already-established WS handler (it already captured `user_id`). To connect as a different user, use `switch_user()` before opening the new WS connection.
+- **`get_jwt_strategy` must be public:** The WS auth dep (`get_ws_user` in `deps.py`) calls `get_jwt_strategy()` from `app/api/users.py`. It was previously named `_get_jwt_strategy` (private). Renamed to remove the underscore.
