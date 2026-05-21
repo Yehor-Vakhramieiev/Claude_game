@@ -441,11 +441,49 @@ switch_user(USER1 if first_id == USER1_ID else USER2)
 
 ## Environment variables
 
+`.env` is in `.gitignore` — never committed. Copy from `.env.example`:
+
 ```
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/bridge
 REDIS_URL=redis://localhost:6379/0
-SECRET_KEY=change-me-to-a-long-random-secret
+SECRET_KEY=<generated with: python3 -c "import secrets; print(secrets.token_hex(32))">
 ALLOWED_ORIGINS=["http://localhost:3000","http://localhost:5173"]
+```
+
+The `.env` file is already created locally with a real generated `SECRET_KEY`.
+In `docker-compose.yml`, `DATABASE_URL` and `REDIS_URL` are overridden with Docker service names — the `.env` values only matter for local dev.
+
+---
+
+## Docker
+
+```
+Dockerfile          — python:3.14-slim + uv, 4 uvicorn workers
+docker-compose.yml  — app + postgres:17 + redis:7 + nginx, with healthchecks
+nginx.conf          — reverse proxy; /ws/ routes get WebSocket upgrade headers
+.dockerignore       — excludes .venv, tests, .env, __pycache__ from image
+```
+
+**Start everything:**
+```bash
+docker compose up --build
+# API available at http://localhost
+```
+
+**Key docker-compose details:**
+- `app` waits for `postgres` and `redis` via `condition: service_healthy`
+- `DATABASE_URL` and `REDIS_URL` in compose override `.env` with Docker hostnames (`postgres`, `redis`)
+- `nginx` listens on port 80; proxies all traffic to `app:8000`
+- `postgres_data` volume persists DB between restarts
+
+**nginx.conf — two location blocks:**
+```nginx
+location /    { proxy_pass http://app; }          # REST API + docs
+location /ws/ { proxy_pass http://app;            # WebSocket
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+                proxy_read_timeout 86400; }       # keep WS alive 24h
 ```
 
 ---
@@ -453,14 +491,19 @@ ALLOWED_ORIGINS=["http://localhost:3000","http://localhost:5173"]
 ## Running the project
 
 ```bash
-uv run uvicorn main:app --reload          # dev server
+# Local dev (requires PostgreSQL + Redis running)
+uv run uvicorn main:app --reload
+
+# Docker (everything included)
+docker compose up --build
+
+# Tests (no real services needed — fakeredis + mocked DB)
 uv run pytest                             # 148 tests, ~1.3s
-uv run pytest tests/domain/               # domain only (no infra)
-uv run pytest tests/infrastructure/       # infra only (fakeredis)
-uv run pytest tests/api/                  # API + WS (fakeredis, no PostgreSQL)
+uv run pytest tests/domain/               # domain only
+uv run pytest tests/infrastructure/       # fakeredis
+uv run pytest tests/api/                  # API + WS
 ```
 
-Requires PostgreSQL and Redis locally (or via Docker).
 Tables auto-created on startup via `create_db_tables()` (`create_all`). No Alembic yet.
 
 ---
@@ -482,7 +525,6 @@ Tables auto-created on startup via `create_db_tables()` (`create_all`). No Alemb
 
 ## What's left 🔜
 
-- Docker + Nginx config (multi-worker uvicorn behind Nginx)
 - Alembic migrations (replace `create_all`)
 - 145/245 burn rule in `game._end_round()`
 - Frontend (React or Vue)
