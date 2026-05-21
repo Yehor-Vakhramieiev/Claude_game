@@ -1,0 +1,12 @@
+.venv
+.git
+.claude
+.idea
+.vscode
+.mypy_cache
+.pytest_cache
+__pycache__
+*.pyc
+.env
+.coverage*
+tests/

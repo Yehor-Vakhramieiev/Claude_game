@@ -31,5 +31,8 @@ archive.zip
 
 .codspeed
 
+# secrets
+.env
+
 # Claude Code
 .claude/
