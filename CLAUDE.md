@@ -9,10 +9,26 @@ Multiplayer card game **Bridge** (similar to 101 / Mau-Mau rules), implemented a
 - Python 3.14, FastAPI, Pydantic v2, SQLAlchemy 2 (async), asyncpg
 - FastAPI Users 15.0.5 (JWT bearer auth)
 - Redis with hiredis (state storage + Pub/Sub)
-- fakeredis (testing), httpx (testing)
-- pytest (116 tests, all passing)
+- fakeredis, httpx (testing only)
+- pytest (148 tests, all passing)
 - uv (package manager)
 - Planned: Docker + Nginx, React/Vue frontend
+
+---
+
+## Current status
+
+**Everything is implemented and tested. 148/148 tests pass.**
+
+```
+tests/domain/bridge/       — 76 tests  (deck, player, player_manager, rules, game)
+tests/infrastructure/      — 32 tests  (room_repo: 18, ws_manager: 14)
+tests/api/test_rooms.py    — 20 tests  (CRUD, join, leave, start, delete)
+tests/api/test_game_ws.py  — 15 tests  (auth guards, game actions, broadcast)
+tests/api/test_game_ws.py::test_ws_receives_player_joined_event — last added
+```
+
+Run: `uv run pytest` (takes ~1.3 s)
 
 ---
 
@@ -24,10 +40,10 @@ Multiplayer card game **Bridge** (similar to 101 / Mau-Mau rules), implemented a
 - **Objective:** empty your hand first; losers accumulate points from remaining cards; first player to reach **150 points loses** (lowest score wins overall)
 - **Turn:** play one or more cards of the **same rank** that match the **top card's rank or suit** (or the declared suit if a Jack was played)
 
-### Card effects (all applied **immediately** before turn passes)
+### Card effects (applied **immediately** before turn passes)
 | Card | Effect |
 |---|---|
-| 6 | **Cover** — next player must play a 6 or keep drawing (turn does not advance while `cover_active=True`) |
+| 6 | **Cover** — next player must play a 6 or keep drawing (`cover_active=True`) |
 | 7 | Next player **draws 2 cards + skips** their turn |
 | 8 | Next player **draws 1 card** (turn still passes) |
 | J (non-♠) | Player **declares a new suit**; next player must match that suit |
@@ -36,193 +52,265 @@ Multiplayer card game **Bridge** (similar to 101 / Mau-Mau rules), implemented a
 | A | Next player **skips** their turn |
 
 ### Special win condition
-- **Bridge call:** playing 4 cards of the same rank in one turn ends the round immediately (instant win for that round)
+- **Bridge call:** playing 4 cards of the same rank in one turn ends the round immediately
 
 ### Scoring
-- Round winner scores 0 for that round
-- All other players score the sum of their remaining hand values:
-  - 6, 7, 8, 9 = 0 pts; 10, Q, K = 10 pts; J = 20 pts; A = 15 pts; J♠ = 40 pts; K♥ = 50 pts
+- Round winner scores 0; others score sum of remaining hand values
+- 6, 7, 8, 9 = 0 pts; 10, Q, K = 10 pts; J = 20 pts; A = 15 pts; J♠ = 40 pts; K♥ = 50 pts
 - If any player reaches ≥150 points the game ends; lowest total score wins
-- **TODO:** 145/245 burn rule not yet implemented (holding exactly 145 pts resets to 245; TODO in scoring)
+- **TODO:** 145/245 burn rule not yet implemented
 
 ---
 
-## Project structure
+## Project structure (all files)
 
 ```
 Games/
-├── main.py                          # FastAPI entry point, lifespan (Redis + DB init)
-├── pyproject.toml                   # uv dependencies + pytest config
-├── .env                             # (not committed) DATABASE_URL, REDIS_URL, SECRET_KEY
+├── main.py
+├── pyproject.toml
+├── .env                             # not committed
 │
 ├── app/
-│   ├── core/
-│   │   └── config.py                # pydantic-settings: database_url, redis_url, secret_key, allowed_origins
+│   ├── core/config.py               # pydantic-settings: database_url, redis_url, secret_key, allowed_origins
 │   │
-│   ├── domain/
-│   │   ├── bridge/
-│   │   │   ├── entities/
-│   │   │   │   ├── card.py          # Card hierarchy, CardRank/CardSuit enums, CARD_REGISTRY, restore_from_data()
-│   │   │   │   ├── deck.py          # Deck (draw_pile, discard_pile, shuffle, draw_card, discard_card)
-│   │   │   │   ├── effects.py       # DrawEffect, SkipEffect, CoverEffect, ChangeSuitEffect (Pydantic models)
-│   │   │   │   ├── player.py        # Player (id, name, hand, add_cards, remove_cards)
-│   │   │   │   └── __init__.py      # Re-exports all entities + effects
-│   │   │   ├── exceptions.py        # All domain exceptions
-│   │   │   ├── game.py              # Game (main orchestrator, play_cards, draw_card, _apply_effects, scoring)
-│   │   │   ├── player_manager.py    # PlayerManager (turn order, skips, advance_move)
-│   │   │   └── rules.py             # can_play_cards(), is_bridge_call(), score_hand()
-│   │   └── room/
-│   │       └── room.py              # Room (id, name, host_id, player_ids, game, computed status)
+│   ├── domain/bridge/
+│   │   ├── entities/
+│   │   │   ├── card.py              # Card, CardRank/CardSuit enums, CARD_REGISTRY, restore_from_data()
+│   │   │   ├── deck.py              # Deck: draw_pile, discard_pile, shuffle, draw_card, discard_card
+│   │   │   ├── effects.py           # DrawEffect, SkipEffect, CoverEffect, ChangeSuitEffect
+│   │   │   ├── player.py            # Player: id, name, hand, add_cards, remove_cards
+│   │   │   └── __init__.py          # re-exports all entities + effects
+│   │   ├── exceptions.py            # all domain exceptions
+│   │   ├── game.py                  # Game: play_cards, draw_card, _apply_effects, scoring, GameStatus
+│   │   ├── player_manager.py        # PlayerManager: turn order, skips, advance_move
+│   │   └── rules.py                 # can_play_cards(), is_bridge_call(), score_hand()
+│   │
+│   ├── domain/room/room.py          # Room: id, name, host_id, player_ids, game, computed status
 │   │
 │   ├── infrastructure/
-│   │   ├── db/
-│   │   │   ├── models.py            # SQLAlchemy User model (FastAPI Users)
-│   │   │   └── session.py           # async engine, session maker, get_async_session, create_db_tables
-│   │   ├── redis/
-│   │   │   └── client.py            # ConnectionPool, create_pool(), close_pool(), get_redis()
-│   │   ├── repositories/
-│   │   │   └── room_repo.py         # Async Redis-backed RoomRepository + distributed lock()
-│   │   └── ws_manager.py            # WebSocketManager (local WS fan-out via Redis Pub/Sub)
+│   │   ├── db/models.py             # SQLAlchemy User model (FastAPI Users)
+│   │   ├── db/session.py            # async engine, get_async_session, create_db_tables
+│   │   ├── redis/client.py          # create_pool(), close_pool(), get_redis() → Redis
+│   │   ├── repositories/room_repo.py  # RoomRepository + distributed lock
+│   │   └── ws_manager.py            # WebSocketManager + module-level ws_manager singleton
 │   │
 │   ├── api/
-│   │   ├── users.py                 # FastAPI Users setup (UserManager, auth_backend, fastapi_users, get_jwt_strategy)
+│   │   ├── users.py                 # UserManager, auth_backend, fastapi_users, get_jwt_strategy (PUBLIC)
 │   │   ├── deps.py                  # get_redis, get_room_repo, get_room, current_active_user, get_ws_user
 │   │   └── routers/
-│   │       ├── auth.py              # Mounts FastAPI Users routers under /auth
-│   │       ├── rooms.py             # Rooms CRUD: create, list, get, join, leave, start, delete
-│   │       └── game_ws.py           # WebSocket /ws/rooms/{room_id}: play_cards, draw_card
+│   │       ├── auth.py              # FastAPI Users routers under /auth
+│   │       ├── rooms.py             # CRUD + join/leave/start/delete, broadcasts lobby events
+│   │       └── game_ws.py           # WebSocket /ws/rooms/{room_id}
 │   │
 │   └── schemas/
 │       ├── auth.py                  # UserRead, UserCreate, UserUpdate
 │       ├── room.py                  # RoomCreate, RoomResponse
-│       └── ws.py                    # PlayCardsMessage, DrawCardMessage, incoming_message_adapter (TypeAdapter)
+│       └── ws.py                    # PlayCardsMessage, DrawCardMessage, incoming_message_adapter
 │
 └── tests/
-    ├── domain/
-    │   └── bridge/
-    │       ├── test_deck.py              # 8 tests
-    │       ├── test_player.py            # 4 tests
-    │       ├── test_player_manager.py    # 20 tests
-    │       ├── test_rules.py             # 17 tests
-    │       └── test_game.py              # 27 tests (effects, cover, bridge call, scoring, round end)
+    ├── domain/bridge/
+    │   ├── test_deck.py             # 8 tests
+    │   ├── test_player.py           # 4 tests
+    │   ├── test_player_manager.py   # 20 tests
+    │   ├── test_rules.py            # 17 tests
+    │   └── test_game.py             # 27 tests
     ├── infrastructure/
-    │   ├── test_room_repo.py             # 18 tests (get, all, save, delete, lock)
-    │   └── test_ws_manager.py            # 14 tests (connect, disconnect, broadcast, fan_out)
+    │   ├── test_room_repo.py        # 18 tests
+    │   └── test_ws_manager.py       # 14 tests
     └── api/
-        ├── conftest.py                   # fake_redis, client, switch_user, USER1/2/3/4 fixtures
-        ├── test_rooms.py                 # 20 tests (CRUD, join, leave, start, delete)
-        └── test_game_ws.py               # 15 tests (auth guards, game actions, broadcast)
+        ├── conftest.py              # fixtures: fake_redis, client, reset_ws_manager, switch_user
+        ├── test_rooms.py            # 20 tests
+        └── test_game_ws.py          # 15 tests
 ```
 
 ---
 
-## Key design decisions
+## Key files — full details
 
-### Why Pydantic BaseModel everywhere in the domain
-Every domain object (`Card`, `Deck`, `Player`, `PlayerManager`, `Game`, `Room`) extends `pydantic.BaseModel`.
-This was intentional from the start: `model_dump_json()` / `model_validate_json()` enables zero-cost Redis round-trip serialisation. No custom serialisers needed.
-
-### Card polymorphism
-`card.py` has a `CARD_REGISTRY: dict[tuple[CardRank, CardSuit | None], type[Card]]` that maps `(rank, suit)` → concrete subclass.
-`restore_from_data(pile_data)` uses the registry to reconstruct the correct subclass (e.g. `SevenCard`, `KingHeartsCard`) when deserialising from Redis JSON. Specific suit match beats rank-only match.
-
-### Effect immediacy
-All effects (`DrawEffect`, `SkipEffect`, `CoverEffect`, `ChangeSuitEffect`) are applied **immediately** inside `Game._apply_effects()` to `next_player_id` **before** `advance_move()` is called. This is the correct game rule.
-
-### Cover mechanic (6)
-`Game.cover_active: bool` flag. When `True`:
-- `can_play_cards()` only allows rank=SIX
-- `draw_card()` does **not** advance the turn — the player keeps drawing until they have a 6 to cover
-
-### Distributed lock implementation
-**Critical:** `redis-py`'s built-in `Lock` uses Lua scripts (`EVALSHA`) which `fakeredis` doesn't support without `lupa`. The lock in `room_repo.py` uses a **custom `SET NX EX` + `GET/DEL`** pattern instead:
+### `main.py`
 ```python
+@asynccontextmanager
+async def lifespan(app):
+    create_pool()
+    await create_db_tables()
+    yield
+    await close_pool()
+
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
+app.include_router(rooms.router, prefix="/rooms", tags=["rooms"])
+app.include_router(game_ws.router, prefix="/ws/rooms", tags=["game-ws"])
+
+@app.get("/health")
+async def health(): return {"status": "ok"}
+```
+
+### `app/infrastructure/redis/client.py`
+```python
+_pool: ConnectionPool | None = None
+
+def create_pool() -> ConnectionPool:
+    global _pool
+    _pool = ConnectionPool.from_url(settings.redis_url, decode_responses=True, max_connections=20)
+    return _pool
+
+async def close_pool() -> None:
+    if _pool: await _pool.aclose()
+
+def get_redis() -> Redis:
+    if _pool is None: raise RuntimeError("Redis pool not initialised")
+    return Redis(connection_pool=_pool)
+```
+
+### `app/infrastructure/repositories/room_repo.py`
+Keys: `room:{id}` (JSON), `rooms:all` (Set), `lock:room:{id}` (mutex token)
+
+**CRITICAL — custom lock (not redis.lock()):**
+```python
+# redis-py's Lock uses EVALSHA (Lua) — fakeredis doesn't support it without lupa
+# Custom SET NX EX + token-based release instead:
+async with repo.lock(room_id):
+    ...
+```
+Lock internals:
+```python
+_LOCK_TIMEOUT = 10   # auto-expire seconds
+_LOCK_WAIT = 5.0     # max wait
+_LOCK_POLL = 0.05    # polling interval
+
+token = str(uuid.uuid4())
 acquired = await self._redis.set(key, token, nx=True, ex=_LOCK_TIMEOUT)
-# On release:
+# Release only if we still own it:
 current = await self._redis.get(key)
-if current == token:   # only release if we still own it (token check)
+if current == token:
     await self._redis.delete(key)
 ```
-Do NOT replace this with `redis.lock()` — it will break tests.
+`all()` uses a pipeline to batch-GET all room JSONs; silently skips `None` (expired keys).
 
-### TypeAdapter for WS message parsing
-`app/schemas/ws.py` uses `Annotated[Union, Field(discriminator=...)]` which has no `.model_validate_json()`.
-Must use `TypeAdapter`:
+### `app/infrastructure/ws_manager.py`
 ```python
-incoming_message_adapter = TypeAdapter(_IncomingUnion)
-# Usage:
-msg = incoming_message_adapter.validate_json(raw)
+class WebSocketManager:
+    _connections: dict[str, set[WebSocket]]   # room_id → local WS set
+    _listeners: dict[str, asyncio.Task]        # room_id → Pub/Sub task
+
+async def connect(room_id, ws, redis):
+    await ws.accept()
+    _connections[room_id].add(ws)
+    if room_id not in _listeners:
+        _listeners[room_id] = asyncio.create_task(_listen(room_id, redis))
+
+async def disconnect(room_id, ws):
+    _connections[room_id].discard(ws)
+    if not _connections[room_id]:
+        del _connections[room_id]
+        task = _listeners.pop(room_id, None)
+        if task: task.cancel()
+
+async def broadcast(room_id, redis, payload: dict):
+    await redis.publish(f"channel:room:{room_id}", json.dumps(payload))
+
+async def _listen(room_id, redis):
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(f"channel:room:{room_id}")
+    async for message in pubsub.listen():
+        if message["type"] == "message":
+            await _fan_out(room_id, message["data"])
+    # CancelledError caught silently; pubsub unsubscribed in finally
+
+async def _fan_out(room_id, data: str):
+    # sends data to all local WS; removes dead connections on exception
+
+ws_manager = WebSocketManager()   # module-level singleton
 ```
 
-### WebSocket auth
-`get_ws_user` in `deps.py` reads JWT from `?token=` query param (browsers can't send custom WS headers).
-It returns `User | None` — never raises — so the WS handler can do `accept() + close(4001)` on `None`.
-This signature is essential for test overrideability via `app.dependency_overrides`.
+### `app/schemas/ws.py`
+**CRITICAL — must use TypeAdapter, not .model_validate_json():**
+```python
+class PlayCardsMessage(BaseModel):
+    action: Literal["play_cards"]
+    cards: list[CardData] = Field(min_length=1)
+    declared_suit: CardSuit | None = None
 
-### Starlette WS close pattern
-Must call `ws.accept()` before `ws.close(code)` for the close code to be delivered:
+class DrawCardMessage(BaseModel):
+    action: Literal["draw_card"]
+
+_IncomingUnion = Annotated[PlayCardsMessage | DrawCardMessage, Field(discriminator="action")]
+incoming_message_adapter = TypeAdapter(_IncomingUnion)
+
+# Usage in game_ws.py:
+msg = incoming_message_adapter.validate_json(raw)
+```
+`Annotated[...]` type aliases have no `.model_validate_json()` — calling it raises `AttributeError` silently swallowed by `except Exception`.
+
+### `app/api/deps.py`
+```python
+async def get_ws_user(
+    token: str = Query(...),
+    session: AsyncSession = Depends(get_async_session),
+) -> User | None:
+    # JWT via ?token= query param (browsers can't send custom WS headers)
+    # Returns None on any error — never raises
+    # This signature is essential for app.dependency_overrides in tests
+    strategy = get_jwt_strategy()
+    user_db = SQLAlchemyUserDatabase(session, User)
+    user_manager = UserManager(user_db)
+    try:
+        user = await strategy.read_token(token, user_manager)
+    except Exception:
+        return None
+    if user is None or not user.is_active:
+        return None
+    return user
+```
+
+### `app/api/users.py`
+`get_jwt_strategy` is **public** (no underscore). It's called directly from `deps.get_ws_user`.
+Do not rename it back to `_get_jwt_strategy`.
+
+### `app/api/routers/game_ws.py`
+Pattern for auth rejection (MUST call accept before close):
 ```python
 if ws_user is None:
     await ws.accept()
     await ws.close(code=4001)
     return
 ```
+Close codes: `4001` unauthenticated, `4003` not a room member, `4004` room not found.
 
-### Redis architecture (multi-worker)
-```
-Worker 1 (uvicorn)       Worker 2 (uvicorn)
-  Player A, B (WS)  ←→    Player C, D (WS)
-         ↕                        ↕
-              Redis:
-    room:{id}        → JSON (Pydantic Room state)
-    rooms:all        → Set of all room IDs
-    lock:room:{id}   → Distributed mutex (custom SET NX EX)
-    channel:room:{id}→ Pub/Sub event channel
-```
+On connect, sends `{"event": "room_snapshot", "room": {...}}` immediately.
 
-**Flow for every mutating operation (join/leave/start/play/draw):**
-1. Acquire `lock:room:{id}` (blocking, 5s wait)
-2. Load `Room.model_validate_json(redis.get(...))`
+`_handle_play` and `_handle_draw` both:
+1. Acquire `repo.lock(room_id)` (async context manager)
+2. Re-read room from Redis inside lock
 3. Apply domain logic
-4. `redis.set(room:{id}, room.model_dump_json())`
-5. `redis.publish(channel:room:{id}, event_json)`
-6. Release lock
-7. Each worker's `WebSocketManager` has a background asyncio task subscribed to `channel:room:{id}` and fans out to local WS clients
+4. `await repo.save(room)`
+5. Release lock, then broadcast
 
-### Authentication
-FastAPI Users 15.0.5 with UUID user IDs and JWT bearer token.
-- Login: `POST /auth/jwt/login` → returns `access_token`
-- Register: `POST /auth/register`
-- All rooms/WS endpoints require auth (`Authorization: Bearer <token>` for HTTP, `?token=` for WS)
-- `get_jwt_strategy` is public (exported from `app/api/users.py`) — needed by `get_ws_user` in deps.py
+### `app/api/routers/rooms.py`
+Broadcasts lobby events via `ws_manager.broadcast(room.id, repo.redis, {...})`:
+- `join` → `{"event": "player_joined", "player_id": ..., "room": ...}`
+- `leave` → `{"event": "player_left", "player_id": ..., "room": ...}`
+- `start` → `{"event": "game_started", "room": ...}`
 
----
-
-## Redis key schema
-| Key | Type | Content |
-|---|---|---|
-| `room:{id}` | String | `Room.model_dump_json()` |
-| `rooms:all` | Set | All room IDs |
-| `lock:room:{id}` | String | Custom mutex token |
-| `channel:room:{id}` | Pub/Sub | JSON event payloads |
+`join`, `leave`, `start` re-read inside lock to avoid TOCTOU.
+`create` and `delete` don't need a lock.
 
 ---
 
-## REST API (implemented)
+## REST API
 
-| Method | Path | Description |
-|---|---|---|
-| POST | `/auth/register` | Register user |
-| POST | `/auth/jwt/login` | Login → JWT token |
-| POST | `/rooms` | Create room |
-| GET | `/rooms` | List all rooms |
-| GET | `/rooms/{id}` | Get room detail |
-| POST | `/rooms/{id}/join` | Join room |
-| POST | `/rooms/{id}/leave` | Leave room |
-| POST | `/rooms/{id}/start` | Start game (host only) |
-| DELETE | `/rooms/{id}` | Delete room (host only) |
-| WS | `/ws/rooms/{id}?token=` | Game WebSocket |
-| GET | `/health` | Health check |
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/auth/register` | No | Register user |
+| POST | `/auth/jwt/login` | No | Login → `access_token` |
+| POST | `/rooms` | Bearer | Create room |
+| GET | `/rooms` | Bearer | List all rooms |
+| GET | `/rooms/{id}` | Bearer | Get room detail |
+| POST | `/rooms/{id}/join` | Bearer | Join room |
+| POST | `/rooms/{id}/leave` | Bearer | Leave room |
+| POST | `/rooms/{id}/start` | Bearer | Start game (host only) |
+| DELETE | `/rooms/{id}` | Bearer | Delete room (host only) |
+| WS | `/ws/rooms/{id}?token=` | Query param | Game WebSocket |
+| GET | `/health` | No | Health check |
 
 ---
 
@@ -231,62 +319,127 @@ FastAPI Users 15.0.5 with UUID user IDs and JWT bearer token.
 ```json
 // client → server
 {"action": "play_cards", "cards": [{"rank": "7", "suit": "hearts"}]}
-{"action": "play_cards", "cards": [...], "declared_suit": "clubs"}  // for Jack
+{"action": "play_cards", "cards": [...], "declared_suit": "clubs"}
 {"action": "draw_card"}
 
-// server → all clients in room (broadcast via ws_manager)
-{"event": "room_snapshot", "room": {...}}           // on connect
+// server → all clients in room (broadcast)
+{"event": "room_snapshot", "room": {...}}
 {"event": "player_played", "player_id": "...", "cards": [...], "declared_suit": null, "room": {...}}
-{"event": "player_drew", "player_id": "...", "count": 1, "room": {...}}
-{"event": "round_ended", "winner_id": "...", "scores": {...}, "room": {...}}
-{"event": "game_over", "scores": {...}, "room": {...}}
-{"event": "player_joined", "player_id": "...", "room": {...}}   // from rooms.py
-{"event": "player_left", "player_id": "...", "room": {...}}     // from rooms.py
-{"event": "game_started", "room": {...}}                        // from rooms.py
-{"event": "error", "detail": "..."}                             // error response
+{"event": "player_drew",   "player_id": "...", "count": 1, "room": {...}}
+{"event": "round_ended",   "winner_id": "...", "scores": {...}, "room": {...}}
+{"event": "game_over",     "scores": {...}, "room": {...}}
+{"event": "player_joined", "player_id": "...", "room": {...}}
+{"event": "player_left",   "player_id": "...", "room": {...}}
+{"event": "game_started",  "room": {...}}
+{"event": "error",         "detail": "..."}
 ```
 
-WS close codes:
-- `4001` — unauthenticated
-- `4003` — not a member of this room
-- `4004` — room not found
+---
+
+## Redis architecture
+
+```
+Worker 1 (uvicorn)       Worker 2 (uvicorn)
+  Player A, B (WS)  ←→    Player C, D (WS)
+         ↕                        ↕
+              Redis:
+    room:{id}         → JSON (Room.model_dump_json())
+    rooms:all         → Set of all room IDs
+    lock:room:{id}    → Custom mutex token (SET NX EX)
+    channel:room:{id} → Pub/Sub event payloads
+```
+
+Flow for every mutating operation:
+1. Acquire `lock:room:{id}` (blocking, 5s wait, 10s auto-expire)
+2. `Room.model_validate_json(await redis.get(...))`
+3. Apply domain logic
+4. `await redis.set(room:{id}, room.model_dump_json())`
+5. `await redis.publish(channel:room:{id}, json.dumps(event))`
+6. Release lock (only if token still matches)
+7. Each worker's `ws_manager` background task fans out to local WS clients
 
 ---
 
 ## Test structure
 
-All tests use `asyncio.run()` (not pytest-anyio) for simplicity.
-
-**`tests/api/conftest.py`** key fixtures:
-- `fake_redis` — `fakeredis.FakeAsyncRedis(decode_responses=True)`, fresh per test
-- `client` — `TestClient(app)` with DB startup mocked, `get_redis` overridden to `fake_redis`, auth overridden to `USER1`
-- `reset_ws_manager` — autouse fixture that clears `ws_manager._connections` and `ws_manager._listeners` between tests
-- `switch_user(user)` — changes `current_active_user` and `get_ws_user` dependency overrides mid-test
-
-**Infrastructure tests** (`tests/infrastructure/`) use `asyncio.run()` + inner `async def _()`:
-- `test_room_repo.py` — 18 tests covering all CRUD + lock behavior
-- `test_ws_manager.py` — 14 tests; WS objects mocked with `AsyncMock()`
-
-**Important test pattern for WS broadcast tests:**
+### `tests/api/conftest.py` — fixtures
 ```python
-await manager.connect("r1", ws, redis)
-await asyncio.sleep(0)   # REQUIRED: let listener subscribe before broadcasting
-await manager.broadcast("r1", redis, payload)
-await asyncio.sleep(0.05)  # let fan_out deliver
-ws.send_text.assert_called_once()
+USER1 = _make_user(1)   # id = 00000000-0000-0000-0000-000000000001
+USER2 = _make_user(2)   # etc.
+USER3 = _make_user(3)
+USER4 = _make_user(4)
+USER1_ID, USER2_ID, USER3_ID, USER4_ID = str(USER1.id), ...
+
+@pytest.fixture
+def fake_redis():
+    return fakeredis.FakeAsyncRedis(decode_responses=True)
+
+@pytest.fixture(autouse=True)
+def reset_ws_manager():
+    ws_manager._connections.clear()
+    ws_manager._listeners.clear()
+    yield
+    ws_manager._connections.clear()
+    ws_manager._listeners.clear()
+
+@pytest.fixture
+def client(fake_redis, monkeypatch):
+    monkeypatch.setattr("main.create_db_tables", AsyncMock())  # no real PostgreSQL
+    app.dependency_overrides[current_active_user] = lambda: USER1
+    app.dependency_overrides[get_ws_user] = lambda: USER1
+    app.dependency_overrides[get_redis] = lambda: fake_redis
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+def switch_user(user):
+    app.dependency_overrides[current_active_user] = lambda u=user: u
+    app.dependency_overrides[get_ws_user] = lambda u=user: u
 ```
 
-**Important test pattern for WS close code tests:**
+### Critical test patterns
+
+**WS close code tests** — `WebSocketDisconnect` raised only inside the context on `receive_text()`:
 ```python
 with client.websocket_connect(ws_url(room_id)) as ws:
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        ws.receive_text()  # raises AFTER server does accept+close
+        ws.receive_text()
 assert exc_info.value.code == 4001
+```
+
+**WS broadcast tests** — `asyncio.sleep(0)` required after connect to let listener subscribe:
+```python
+await manager.connect("r1", ws, redis)
+await asyncio.sleep(0)            # REQUIRED: let Pub/Sub listener subscribe
+await manager.broadcast("r1", redis, payload)
+await asyncio.sleep(0.05)         # let fan_out deliver
+ws.send_text.assert_called_once()
+```
+
+**Infrastructure tests** — all use `asyncio.run()` + inner `async def _()`:
+```python
+def test_something():
+    async def _():
+        ...
+    asyncio.run(_())
+```
+
+**Avoiding "not your turn" errors in API tests** — always detect who goes first:
+```python
+def get_first_player_id(client, room_id):
+    with client.websocket_connect(f"/ws/rooms/{room_id}") as ws:
+        snap = ws.receive_json()
+    pm = snap["room"]["game"]["player_manager"]
+    return pm["turn_order"][pm["current_player_index"]]
+
+# Then switch to that user before taking an action
+first_id = get_first_player_id(client, room_id)
+switch_user(USER1 if first_id == USER1_ID else USER2)
 ```
 
 ---
 
-## Environment variables (.env file)
+## Environment variables
 
 ```
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/bridge
@@ -300,35 +453,37 @@ ALLOWED_ORIGINS=["http://localhost:3000","http://localhost:5173"]
 ## Running the project
 
 ```bash
-uv run uvicorn main:app --reload          # dev
-uv run pytest                             # tests (116 passing)
+uv run uvicorn main:app --reload          # dev server
+uv run pytest                             # 148 tests, ~1.3s
+uv run pytest tests/domain/               # domain only (no infra)
+uv run pytest tests/infrastructure/       # infra only (fakeredis)
+uv run pytest tests/api/                  # API + WS (fakeredis, no PostgreSQL)
 ```
 
-Requires PostgreSQL and Redis running locally (or via Docker).
-Tables are auto-created on startup via `create_db_tables()` (SQLAlchemy `create_all`).
-No Alembic migrations yet — `create_all` is fine for development.
+Requires PostgreSQL and Redis locally (or via Docker).
+Tables auto-created on startup via `create_db_tables()` (`create_all`). No Alembic yet.
 
 ---
 
 ## What's done ✅
 
-1. Full domain layer — entities, effects, player manager, rules, game orchestrator
-2. 76 passing domain unit tests (no infra deps)
-3. FastAPI Users auth (JWT, PostgreSQL, UUID users)
-4. Rooms REST API (create/list/get/join/leave/start/delete) — 20 tests
-5. Redis infrastructure layer:
-   - Async Redis-backed `RoomRepository` with custom distributed lock — 18 tests
-   - `WebSocketManager` with Redis Pub/Sub fan-out for cross-worker events — 14 tests
+1. Full domain layer: entities, effects, player_manager, rules, game orchestrator — 76 tests
+2. FastAPI Users auth: JWT, PostgreSQL, UUID user IDs
+3. Rooms REST API: create/list/get/join/leave/start/delete — 20 tests
+4. Redis infrastructure:
+   - `RoomRepository`: async CRUD + custom distributed lock — 18 tests
+   - `WebSocketManager`: local WS fan-out via Redis Pub/Sub — 14 tests
    - Connection pool lifecycle in FastAPI lifespan
-6. WebSocket game endpoint `/ws/rooms/{room_id}` — 15 tests
+5. WebSocket game endpoint `/ws/rooms/{room_id}`:
    - Auth via `?token=` query param
-   - `play_cards` and `draw_card` actions
-   - Broadcasts game events to all room members
+   - `play_cards` and `draw_card` actions with full game logic
+   - Broadcasts: `player_played`, `player_drew`, `round_ended`, `game_over` — 15 tests
+6. Lobby WS events: `player_joined`, `player_left`, `game_started` (from rooms.py)
 
 ## What's left 🔜
 
-- Docker + Nginx config (multi-worker uvicorn behind Nginx reverse proxy)
-- Alembic migrations (replace `create_all` with proper migrations)
+- Docker + Nginx config (multi-worker uvicorn behind Nginx)
+- Alembic migrations (replace `create_all`)
 - 145/245 burn rule in `game._end_round()`
 - Frontend (React or Vue)
 
@@ -336,13 +491,26 @@ No Alembic migrations yet — `create_all` is fine for development.
 
 ## Known gotchas / non-obvious things
 
-- **`advance_move()` skip logic:** The loop in `PlayerManager.advance_move()` skips players by consuming their skip counter one at a time per pass. Do NOT add a second condition to check the original player — it caused double-decrement bugs previously.
-- **`remove_player()` index adjustment:** Adjust `current_player_index` **before** the bounds check, not after. The order matters: if removing a player before the current index, decrement first, then clamp to 0 if out of bounds.
-- **`top_card` deserialisation:** When loading a `Room` from Redis JSON, `top_card` deserialises as base `Card` (not the subclass), because `Game` declares it as `Card | None`. This is fine — `top_card` is only used for `.rank` and `.suit` comparison in `can_play_cards()`. The subclasses live in the deck piles (restored via `restore_from_data`).
-- **Pydantic `frozen=True` on `Card.value`:** The `value` field uses `default_factory` with a lambda that reads `data["rank"]`. This means value is computed once at construction and then frozen.
-- **`CardSuit.CLUBS = "clubs"` (not "club"):** Was a bug in an earlier version, already fixed.
-- **`rooms:all` set + individual keys:** `RoomRepository.all()` fetches all IDs from the set then pipelines GETs. If a `room:{id}` key expires but the ID is still in the set, `all()` silently skips `None` results. This is intentional — no phantom rooms.
-- **Distributed lock scope:** Only `join`, `leave`, and `start` re-read inside the lock (to avoid TOCTOU). `create_room` and `delete_room` don't need it because they operate on a new/existing-exclusively-owned resource.
-- **fakeredis Pub/Sub:** Works with same `FakeAsyncRedis` instance shared across connect/broadcast calls. Requires `await asyncio.sleep(0)` after `connect()` to let the listener task subscribe before the first broadcast.
-- **`app.dependency_overrides` and WS connections:** Overrides are evaluated per-request. Changing `get_ws_user` override mid-test doesn't affect an already-established WS handler (it already captured `user_id`). To connect as a different user, use `switch_user()` before opening the new WS connection.
-- **`get_jwt_strategy` must be public:** The WS auth dep (`get_ws_user` in `deps.py`) calls `get_jwt_strategy()` from `app/api/users.py`. It was previously named `_get_jwt_strategy` (private). Renamed to remove the underscore.
+- **Custom lock, not redis.lock():** `redis-py`'s `Lock` uses Lua scripts (`EVALSHA`) — `fakeredis` doesn't support them without `lupa`. The lock in `room_repo.py` uses `SET NX EX` + `GET/DEL` with a UUID token. **Do NOT replace with `redis.lock()`** — it breaks all tests.
+
+- **TypeAdapter for discriminated unions:** `Annotated[Union, Field(discriminator=...)]` aliases have no `.model_validate_json()`. Calling it raises `AttributeError` silently caught by `except Exception` in the WS loop — all messages would return "Invalid message format". Must use `TypeAdapter(...)` and call `.validate_json(raw)`.
+
+- **`ws.accept()` before `ws.close(code)`:** Starlette requires `accept()` before `close()` for the close code to be delivered to the client. Missing `accept()` means the client never sees the code.
+
+- **`get_jwt_strategy` is public:** Called directly from `deps.get_ws_user`. Was previously `_get_jwt_strategy` (private). Do not rename back.
+
+- **`app.dependency_overrides` are per-request:** Changing `get_ws_user` override after a WS connection is established has no effect — the handler already captured `user_id`. Use `switch_user()` **before** opening the WS connection.
+
+- **fakeredis Pub/Sub needs a tick:** After `ws_manager.connect()`, the background listener task must subscribe before any broadcast arrives. Always `await asyncio.sleep(0)` between connect and broadcast in tests.
+
+- **`advance_move()` skip logic:** The loop consumes skip counters one at a time per pass. Do NOT add a second condition to check the original player — caused double-decrement bugs before.
+
+- **`remove_player()` index adjustment:** Adjust `current_player_index` **before** the bounds check, not after. Wrong order caused off-by-one bugs.
+
+- **`top_card` deserialisation:** Loads as base `Card` (not subclass) because `Game` declares it `Card | None`. Fine — `top_card` is only used for `.rank`/`.suit` in `can_play_cards()`. Subclasses live in deck piles, restored via `restore_from_data()`.
+
+- **`rooms:all` + individual keys:** `all()` pipelines GETs; silently skips `None` results (expired keys). Intentional — no phantom rooms.
+
+- **Lock scope:** Only `join`, `leave`, `start` re-read inside lock (TOCTOU prevention). `create` and `delete` don't need it.
+
+- **`reset_ws_manager` autouse fixture:** Clears `ws_manager._connections` and `ws_manager._listeners` before and after every test. Without it, background listener tasks from one test bleed into the next.
