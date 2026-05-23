@@ -47,7 +47,7 @@ export default function GamePage() {
 
       if (msg.event === 'round_ended') {
         setRoom(msg.room)
-        setLastPlayedCards([])
+        setLastPlayedCards(msg.room.game?.top_card ? [msg.room.game.top_card] : [])
         setSelected([])
         const winnerId = msg.winner_id
         showNote(winnerId === myId ? '🎉 Вы выиграли раунд!' : `🏆 Раунд выиграл ${winnerId.slice(0, 8)}...`)

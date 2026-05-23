@@ -22,6 +22,10 @@ export default function LobbyPage() {
       if (msg.event === 'room_snapshot' || msg.event === 'player_joined' ||
           msg.event === 'player_left' || msg.event === 'player_ready') {
         setRoom(msg.room)
+        // If game already started (e.g. page refresh), go directly to game
+        if (msg.room.status === 'playing') {
+          navigate(`/game/${roomId}`, { replace: true })
+        }
       }
       if (msg.event === 'game_started') {
         navigate(`/game/${roomId}`, { replace: true })
