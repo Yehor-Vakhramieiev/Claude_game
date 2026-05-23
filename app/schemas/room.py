@@ -14,6 +14,7 @@ class RoomResponse(BaseModel):
     name: str
     host_id: str
     player_ids: list[str]
+    ready_player_ids: list[str]
     max_players: int
     score_limit: int
     status: str

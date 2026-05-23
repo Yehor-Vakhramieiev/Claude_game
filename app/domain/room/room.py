@@ -12,6 +12,7 @@ class Room(BaseModel):
     max_players: int = Field(default=4, ge=2, le=5)
     score_limit: int = Field(default=150)
     player_ids: list[str] = Field(default_factory=list)
+    ready_player_ids: list[str] = Field(default_factory=list)
     game: Game | None = None
 
     @computed_field

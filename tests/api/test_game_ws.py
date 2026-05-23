@@ -13,16 +13,17 @@ from tests.api.test_rooms import create_room
 # ──────────────────────────────── helpers ────────────────────────────────────
 
 def setup_started_game(client: TestClient, fake_redis) -> str:
-    """Create a 2-player room and start the game. Returns room_id."""
+    """Create a 2-player room and start the game via ready flow. Returns room_id."""
     room = create_room(client, max_players=2)
     room_id = room["id"]
 
     switch_user(USER2)
     client.post(f"/rooms/{room_id}/join")
+    client.post(f"/rooms/{room_id}/ready")
 
     switch_user(USER1)
-    r = client.post(f"/rooms/{room_id}/start")
-    assert r.status_code == 200
+    r = client.post(f"/rooms/{room_id}/ready")  # triggers auto-start
+    assert r.json()["status"] == "playing"
     return room_id
 
 
@@ -291,10 +292,16 @@ def test_ws_receives_game_started_event(client, fake_redis):
     with client.websocket_connect(ws_url(room_id)) as ws:
         ws.receive_json()          # snapshot
 
-        r = client.post(f"/rooms/{room_id}/start")
-        assert r.status_code == 200
+        # Both players mark ready; USER2 first, then USER1 (triggers auto-start)
+        switch_user(USER2)
+        client.post(f"/rooms/{room_id}/ready")
+        ws.receive_json()          # player_ready USER2
 
-        event = ws.receive_json()
+        switch_user(USER1)
+        client.post(f"/rooms/{room_id}/ready")
+        ws.receive_json()          # player_ready USER1
+
+        event = ws.receive_json()  # game_started
 
     assert event["event"] == "game_started"
     assert event["room"]["status"] == "playing"

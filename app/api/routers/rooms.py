@@ -22,6 +22,7 @@ def _to_response(room: Room) -> RoomResponse:
         name=room.name,
         host_id=room.host_id,
         player_ids=room.player_ids,
+        ready_player_ids=room.ready_player_ids,
         max_players=room.max_players,
         score_limit=room.score_limit,
         status=room.status,
@@ -30,6 +31,16 @@ def _to_response(room: Room) -> RoomResponse:
 
 def _room_json(room: Room) -> dict:
     return json.loads(room.model_dump_json())
+
+
+def _start_game(room: Room) -> None:
+    pm = PlayerManager(max_players=room.max_players)
+    game = Game(player_manager=pm, max_points=room.score_limit)
+    for player_id in room.player_ids:
+        game.join(Player(id=player_id, name=player_id))
+    game.start()
+    room.game = game
+    room.ready_player_ids.clear()
 
 
 @router.post("", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
@@ -102,12 +113,15 @@ async def leave_room(
     if user_id not in room.player_ids:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Not in this room")
 
+    game_started = False
     async with repo.lock(room.id):
         room = await repo.get(room.id)
         if room is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Room not found")
 
         room.player_ids.remove(user_id)
+        if user_id in room.ready_player_ids:
+            room.ready_player_ids.remove(user_id)
 
         if not room.player_ids:
             await repo.delete(room.id)
@@ -116,6 +130,15 @@ async def leave_room(
         if room.host_id == user_id:
             room.host_id = room.player_ids[0]
 
+        # If everyone remaining is ready and we have enough, auto-start
+        if (
+            room.status == "waiting"
+            and len(room.player_ids) >= 2
+            and set(room.ready_player_ids) == set(room.player_ids)
+        ):
+            _start_game(room)
+            game_started = True
+
         await repo.save(room)
 
     await ws_manager.broadcast(room.id, repo.redis, {
@@ -123,43 +146,59 @@ async def leave_room(
         "player_id": user_id,
         "room": _room_json(room),
     })
+    if game_started:
+        await ws_manager.broadcast(room.id, repo.redis, {
+            "event": "game_started",
+            "room": _room_json(room),
+        })
     return _to_response(room)
 
 
-@router.post("/{room_id}/start", response_model=RoomResponse)
-async def start_game(
+@router.post("/{room_id}/ready", response_model=RoomResponse)
+async def player_ready(
     room: Room = Depends(get_room),
     user: User = Depends(current_active_user),
     repo: RoomRepository = Depends(get_room_repo),
 ) -> RoomResponse:
-    if str(user.id) != room.host_id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Only the host can start the game")
+    user_id = str(user.id)
+
+    if user_id not in room.player_ids:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Not in this room")
     if room.status != "waiting":
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Game already started")
 
+    game_started = False
     async with repo.lock(room.id):
         room = await repo.get(room.id)
         if room is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Room not found")
+        if user_id in room.ready_player_ids:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="Already ready")
 
-        pm = PlayerManager(max_players=room.max_players)
-        game = Game(player_manager=pm, max_points=room.score_limit)
+        room.ready_player_ids.append(user_id)
 
-        for player_id in room.player_ids:
-            game.join(Player(id=player_id, name=player_id))
+        if (
+            len(room.player_ids) >= 2
+            and set(room.ready_player_ids) == set(room.player_ids)
+        ):
+            try:
+                _start_game(room)
+                game_started = True
+            except NotEnoughPlayersError as e:
+                raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e))
 
-        try:
-            game.start()
-        except NotEnoughPlayersError as e:
-            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e))
-
-        room.game = game
         await repo.save(room)
 
     await ws_manager.broadcast(room.id, repo.redis, {
-        "event": "game_started",
+        "event": "player_ready",
+        "player_id": user_id,
         "room": _room_json(room),
     })
+    if game_started:
+        await ws_manager.broadcast(room.id, repo.redis, {
+            "event": "game_started",
+            "room": _room_json(room),
+        })
     return _to_response(room)
 
 

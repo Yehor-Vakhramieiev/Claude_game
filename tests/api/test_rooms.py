@@ -20,6 +20,7 @@ def test_create_room(client):
     assert data["host_id"] == USER1_ID
     assert USER1_ID in data["player_ids"]
     assert data["max_players"] == 2
+    assert data["ready_player_ids"] == []
     assert data["status"] == "waiting"
 
 
@@ -93,14 +94,15 @@ def test_join_room_full(client, fake_redis):
 
 
 def test_join_started_game(client, fake_redis):
-    room = create_room(client, max_players=2)
+    room = create_room(client, max_players=3)
     room_id = room["id"]
 
     switch_user(USER2)
     client.post(f"/rooms/{room_id}/join")
+    client.post(f"/rooms/{room_id}/ready")
 
     switch_user(USER1)
-    client.post(f"/rooms/{room_id}/start")
+    client.post(f"/rooms/{room_id}/ready")  # triggers auto-start
 
     switch_user(USER3)
     r = client.post(f"/rooms/{room_id}/join")
@@ -152,49 +154,102 @@ def test_leave_transfers_host(client, fake_redis):
     assert r.json()["host_id"] == USER2_ID
 
 
-# ──────────────────────────────── start ──────────────────────────────────────
+# ──────────────────────────────── ready ──────────────────────────────────────
 
-def test_start_game_not_host(client, fake_redis):
-    room = create_room(client, max_players=2)
-    room_id = room["id"]
-
+def test_ready_not_member(client, fake_redis):
+    room = create_room(client)
     switch_user(USER2)
-    client.post(f"/rooms/{room_id}/join")
-    r = client.post(f"/rooms/{room_id}/start")
+    r = client.post(f"/rooms/{room['id']}/ready")
     assert r.status_code == 403
 
 
-def test_start_game_not_enough_players(client):
-    room = create_room(client, max_players=2)
-    r = client.post(f"/rooms/{room['id']}/start")
-    assert r.status_code == 409
-    assert "players" in r.json()["detail"].lower()
-
-
-def test_start_game_success(client, fake_redis):
+def test_ready_game_already_started(client, fake_redis):
     room = create_room(client, max_players=2)
     room_id = room["id"]
 
     switch_user(USER2)
     client.post(f"/rooms/{room_id}/join")
+    client.post(f"/rooms/{room_id}/ready")
 
     switch_user(USER1)
-    r = client.post(f"/rooms/{room_id}/start")
+    client.post(f"/rooms/{room_id}/ready")  # triggers auto-start
+
+    # Game started — ready again should fail
+    r = client.post(f"/rooms/{room_id}/ready")
+    assert r.status_code == 409
+    assert "started" in r.json()["detail"]
+
+
+def test_ready_already_ready(client):
+    room = create_room(client)
+    client.post(f"/rooms/{room['id']}/ready")
+    r = client.post(f"/rooms/{room['id']}/ready")
+    assert r.status_code == 409
+    assert "ready" in r.json()["detail"].lower()
+
+
+def test_ready_single_player_does_not_start(client):
+    room = create_room(client)
+    r = client.post(f"/rooms/{room['id']}/ready")
+    assert r.status_code == 200
+    assert r.json()["status"] == "waiting"
+    assert USER1_ID in r.json()["ready_player_ids"]
+
+
+def test_ready_auto_starts_when_all_ready(client, fake_redis):
+    room = create_room(client, max_players=2)
+    room_id = room["id"]
+
+    switch_user(USER2)
+    client.post(f"/rooms/{room_id}/join")
+    r = client.post(f"/rooms/{room_id}/ready")
+    assert r.json()["status"] == "waiting"
+
+    switch_user(USER1)
+    r = client.post(f"/rooms/{room_id}/ready")
     assert r.status_code == 200
     assert r.json()["status"] == "playing"
+    assert r.json()["ready_player_ids"] == []  # cleared on start
 
 
-def test_start_game_already_started(client, fake_redis):
-    room = create_room(client, max_players=2)
+def test_leave_clears_ready_status(client, fake_redis):
+    room = create_room(client, max_players=3)
+    room_id = room["id"]
+
+    switch_user(USER2)
+    client.post(f"/rooms/{room_id}/join")
+    client.post(f"/rooms/{room_id}/ready")
+
+    switch_user(USER3)
+    client.post(f"/rooms/{room_id}/join")
+
+    # USER2 leaves — should be removed from ready_player_ids
+    switch_user(USER2)
+    r = client.post(f"/rooms/{room_id}/leave")
+    assert USER2_ID not in r.json()["ready_player_ids"]
+
+
+def test_leave_triggers_auto_start_if_remaining_all_ready(client, fake_redis):
+    room = create_room(client, max_players=3)
     room_id = room["id"]
 
     switch_user(USER2)
     client.post(f"/rooms/{room_id}/join")
 
+    switch_user(USER3)
+    client.post(f"/rooms/{room_id}/join")
+
+    # USER1 and USER2 mark ready; USER3 does not
     switch_user(USER1)
-    client.post(f"/rooms/{room_id}/start")
-    r = client.post(f"/rooms/{room_id}/start")
-    assert r.status_code == 409
+    client.post(f"/rooms/{room_id}/ready")
+    switch_user(USER2)
+    client.post(f"/rooms/{room_id}/ready")
+
+    # USER3 leaves → remaining (USER1, USER2) are all ready → auto-start
+    switch_user(USER3)
+    r = client.post(f"/rooms/{room_id}/leave")
+    assert r.status_code == 200
+    assert r.json()["status"] == "playing"
 
 
 # ──────────────────────────────── delete ─────────────────────────────────────
