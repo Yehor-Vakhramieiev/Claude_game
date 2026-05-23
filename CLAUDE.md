@@ -9,10 +9,12 @@ Multiplayer card game **Bridge** (similar to 101 / Mau-Mau rules), implemented a
 - Python 3.14, FastAPI, Pydantic v2, SQLAlchemy 2 (async), asyncpg
 - FastAPI Users 15.0.5 (JWT bearer auth)
 - Redis with hiredis (state storage + Pub/Sub)
+- Alembic (async migrations)
 - fakeredis, httpx (testing only)
 - pytest (148 tests, all passing)
 - uv (package manager)
-- Planned: Docker + Nginx, React/Vue frontend
+- React 18 + TypeScript + Vite + Framer Motion (frontend)
+- Docker + Nginx (production deployment)
 
 ---
 
@@ -37,7 +39,7 @@ Run: `uv run pytest` (takes ~1.3 s)
 - **Deck:** 36 cards (6–A in four suits)
 - **Players:** 2–5
 - **Deal:** 5 cards each; one card flipped face-up as the starting top card
-- **Objective:** empty your hand first; losers accumulate points from remaining cards; first player to reach **150 points loses** (lowest score wins overall)
+- **Objective:** empty your hand first; losers accumulate points from remaining cards; first player to reach **150 or 250 points** (configurable per room) loses (lowest score wins overall)
 - **Turn:** play one or more cards of the **same rank** that match the **top card's rank or suit** (or the declared suit if a Jack was played)
 
 ### Card effects (applied **immediately** before turn passes)
@@ -57,18 +59,29 @@ Run: `uv run pytest` (takes ~1.3 s)
 ### Scoring
 - Round winner scores 0; others score sum of remaining hand values
 - 6, 7, 8, 9 = 0 pts; 10, Q, K = 10 pts; J = 20 pts; A = 15 pts; J♠ = 40 pts; K♥ = 50 pts
-- If any player reaches ≥150 points the game ends; lowest total score wins
-- **TODO:** 145/245 burn rule not yet implemented
+- If any player reaches ≥ score_limit the game ends; lowest total score wins
+- **Burn rule:** if a player's score hits exactly `score_limit - 5` (145 for 150-limit, 245 for 250-limit), their score resets to 0
 
 ---
 
 ## Project structure (all files)
 
 ```
-Games/
+Claude_game/
 ├── main.py
 ├── pyproject.toml
+├── alembic.ini
 ├── .env                             # not committed
+├── Dockerfile                       # python:3.14-slim + uv, runs alembic then uvicorn (4 workers)
+├── Dockerfile.nginx                 # multi-stage: node:20-slim builds frontend → nginx:alpine serves it
+├── docker-compose.yml               # app + postgres:17 + redis:7 + nginx, healthchecks
+├── nginx.conf                       # SPA fallback + API proxy + WS upgrade
+├── .dockerignore
+│
+├── alembic/
+│   ├── env.py                       # async Alembic setup with async_engine_from_config
+│   └── versions/
+│       └── 0001_initial_user_table.py  # creates user table (UUID pk, email, hashed_password, etc.)
 │
 ├── app/
 │   ├── core/config.py               # pydantic-settings: database_url, redis_url, secret_key, allowed_origins
@@ -81,11 +94,11 @@ Games/
 │   │   │   ├── player.py            # Player: id, name, hand, add_cards, remove_cards
 │   │   │   └── __init__.py          # re-exports all entities + effects
 │   │   ├── exceptions.py            # all domain exceptions
-│   │   ├── game.py                  # Game: play_cards, draw_card, _apply_effects, scoring, GameStatus
+│   │   ├── game.py                  # Game: play_cards, draw_card, _apply_effects, scoring, GameStatus, max_points
 │   │   ├── player_manager.py        # PlayerManager: turn order, skips, advance_move
 │   │   └── rules.py                 # can_play_cards(), is_bridge_call(), score_hand()
 │   │
-│   ├── domain/room/room.py          # Room: id, name, host_id, player_ids, game, computed status
+│   ├── domain/room/room.py          # Room: id, name, host_id, player_ids, ready_player_ids, score_limit, game
 │   │
 │   ├── infrastructure/
 │   │   ├── db/models.py             # SQLAlchemy User model (FastAPI Users)
@@ -99,13 +112,28 @@ Games/
 │   │   ├── deps.py                  # get_redis, get_room_repo, get_room, current_active_user, get_ws_user
 │   │   └── routers/
 │   │       ├── auth.py              # FastAPI Users routers under /auth
-│   │       ├── rooms.py             # CRUD + join/leave/start/delete, broadcasts lobby events
+│   │       ├── rooms.py             # CRUD + join/leave/ready, broadcasts lobby events; auto-starts when all ready
 │   │       └── game_ws.py           # WebSocket /ws/rooms/{room_id}
 │   │
 │   └── schemas/
 │       ├── auth.py                  # UserRead, UserCreate, UserUpdate
-│       ├── room.py                  # RoomCreate, RoomResponse
+│       ├── room.py                  # RoomCreate (score_limit: 150|250), RoomResponse (ready_player_ids)
 │       └── ws.py                    # PlayCardsMessage, DrawCardMessage, incoming_message_adapter
+│
+├── frontend/
+│   ├── package.json
+│   ├── vite.config.ts               # dev proxy: /auth, /rooms, /ws → localhost:8000
+│   ├── src/
+│   │   ├── main.tsx
+│   │   ├── App.tsx                  # React Router: /, /rooms/:id/lobby, /rooms/:id/game
+│   │   ├── types.ts                 # CardData, PlayerData, RoomData, WsEvent union
+│   │   ├── api.ts                   # fetch wrappers, wsUrl() with ?token= query param
+│   │   ├── pages/
+│   │   │   ├── RoomsPage.tsx        # room list, create room form (name, max_players, score_limit)
+│   │   │   ├── LobbyPage.tsx        # WS-connected lobby; ready button; redirects to game on start
+│   │   │   └── GamePage.tsx         # game board: hand, discard pile (last-move cards), draw pile
+│   │   └── components/
+│   │       └── PlayingCard.tsx      # CSS playing card with Framer Motion layoutId animations
 │
 └── tests/
     ├── domain/bridge/
@@ -286,13 +314,29 @@ On connect, sends `{"event": "room_snapshot", "room": {...}}` immediately.
 5. Release lock, then broadcast
 
 ### `app/api/routers/rooms.py`
+No manual `/start` — game auto-starts when all players mark ready.
+
 Broadcasts lobby events via `ws_manager.broadcast(room.id, repo.redis, {...})`:
 - `join` → `{"event": "player_joined", "player_id": ..., "room": ...}`
 - `leave` → `{"event": "player_left", "player_id": ..., "room": ...}`
-- `start` → `{"event": "game_started", "room": ...}`
+- `ready` → `{"event": "player_ready", "player_id": ..., "room": ...}` (then `game_started` if all ready)
+- auto-start → `{"event": "game_started", "room": ...}`
 
-`join`, `leave`, `start` re-read inside lock to avoid TOCTOU.
+`join`, `leave`, `ready` re-read inside lock to avoid TOCTOU.
 `create` and `delete` don't need a lock.
+
+`leave` also removes the player from `ready_player_ids` and re-checks auto-start condition.
+
+```python
+def _start_game(room: Room) -> None:
+    pm = PlayerManager(max_players=room.max_players)
+    game = Game(player_manager=pm, max_points=room.score_limit)
+    for player_id in room.player_ids:
+        game.join(Player(id=player_id, name=player_id))
+    game.start()
+    room.game = game
+    room.ready_player_ids.clear()
+```
 
 ---
 
@@ -307,7 +351,7 @@ Broadcasts lobby events via `ws_manager.broadcast(room.id, repo.redis, {...})`:
 | GET | `/rooms/{id}` | Bearer | Get room detail |
 | POST | `/rooms/{id}/join` | Bearer | Join room |
 | POST | `/rooms/{id}/leave` | Bearer | Leave room |
-| POST | `/rooms/{id}/start` | Bearer | Start game (host only) |
+| POST | `/rooms/{id}/ready` | Bearer | Toggle ready; game auto-starts when all players ready |
 | DELETE | `/rooms/{id}` | Bearer | Delete room (host only) |
 | WS | `/ws/rooms/{id}?token=` | Query param | Game WebSocket |
 | GET | `/health` | No | Health check |
@@ -330,6 +374,7 @@ Broadcasts lobby events via `ws_manager.broadcast(room.id, repo.redis, {...})`:
 {"event": "game_over",     "scores": {...}, "room": {...}}
 {"event": "player_joined", "player_id": "...", "room": {...}}
 {"event": "player_left",   "player_id": "...", "room": {...}}
+{"event": "player_ready",  "player_id": "...", "room": {...}}
 {"event": "game_started",  "room": {...}}
 {"event": "error",         "detail": "..."}
 ```
@@ -458,32 +503,40 @@ In `docker-compose.yml`, `DATABASE_URL` and `REDIS_URL` are overridden with Dock
 ## Docker
 
 ```
-Dockerfile          — python:3.14-slim + uv, 4 uvicorn workers
-docker-compose.yml  — app + postgres:17 + redis:7 + nginx, with healthchecks
-nginx.conf          — reverse proxy; /ws/ routes get WebSocket upgrade headers
+Dockerfile          — python:3.14-slim + uv; CMD runs alembic upgrade head, then uvicorn (4 workers)
+Dockerfile.nginx    — multi-stage: node:20-slim builds React frontend → nginx:alpine serves dist/
+docker-compose.yml  — app + postgres:17 + redis:7 + nginx (frontend+proxy), healthchecks
+nginx.conf          — SPA fallback for frontend + API/WS proxy to app:8000
 .dockerignore       — excludes .venv, tests, .env, __pycache__ from image
 ```
 
 **Start everything:**
 ```bash
-docker compose up --build
-# API available at http://localhost
+# On Oracle Cloud: containers need internet access for build
+sudo iptables -I FORWARD 1 -i docker0 -o ens3 -j ACCEPT
+sudo iptables -I FORWARD 2 -i ens3 -o docker0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+DOCKER_BUILDKIT=0 docker compose up --build -d
+# App available at http://<server-ip>
 ```
 
 **Key docker-compose details:**
 - `app` waits for `postgres` and `redis` via `condition: service_healthy`
 - `DATABASE_URL` and `REDIS_URL` in compose override `.env` with Docker hostnames (`postgres`, `redis`)
-- `nginx` listens on port 80; proxies all traffic to `app:8000`
+- `nginx` builds from `Dockerfile.nginx` (no volume-mounted nginx.conf)
+- `nginx` listens on port 80; serves frontend SPA, proxies `/auth`, `/rooms`, `/health`, `/ws/` to `app:8000`
 - `postgres_data` volume persists DB between restarts
+- Alembic migrations run automatically on container start before uvicorn
 
-**nginx.conf — two location blocks:**
+**nginx.conf — three location blocks:**
 ```nginx
-location /    { proxy_pass http://app; }          # REST API + docs
-location /ws/ { proxy_pass http://app;            # WebSocket
-                proxy_http_version 1.1;
-                proxy_set_header Upgrade $http_upgrade;
-                proxy_set_header Connection "upgrade";
-                proxy_read_timeout 86400; }       # keep WS alive 24h
+location /             { try_files $uri $uri/ /index.html; }   # React SPA
+location ~ ^/(auth|rooms|health) { proxy_pass http://app; }    # REST API
+location /ws/          { proxy_pass http://app;                 # WebSocket
+                         proxy_http_version 1.1;
+                         proxy_set_header Upgrade $http_upgrade;
+                         proxy_set_header Connection "upgrade";
+                         proxy_read_timeout 86400; }
 ```
 
 ---
@@ -504,7 +557,7 @@ uv run pytest tests/infrastructure/       # fakeredis
 uv run pytest tests/api/                  # API + WS
 ```
 
-Tables auto-created on startup via `create_db_tables()` (`create_all`). No Alembic yet.
+Migrations run automatically via Alembic (`upgrade head`) on container start. `create_db_tables()` still called in lifespan for local dev without Docker.
 
 ---
 
@@ -512,7 +565,7 @@ Tables auto-created on startup via `create_db_tables()` (`create_all`). No Alemb
 
 1. Full domain layer: entities, effects, player_manager, rules, game orchestrator — 76 tests
 2. FastAPI Users auth: JWT, PostgreSQL, UUID user IDs
-3. Rooms REST API: create/list/get/join/leave/start/delete — 20 tests
+3. Rooms REST API: create/list/get/join/leave/ready (auto-start) — 20 tests
 4. Redis infrastructure:
    - `RoomRepository`: async CRUD + custom distributed lock — 18 tests
    - `WebSocketManager`: local WS fan-out via Redis Pub/Sub — 14 tests
@@ -521,13 +574,26 @@ Tables auto-created on startup via `create_db_tables()` (`create_all`). No Alemb
    - Auth via `?token=` query param
    - `play_cards` and `draw_card` actions with full game logic
    - Broadcasts: `player_played`, `player_drew`, `round_ended`, `game_over` — 15 tests
-6. Lobby WS events: `player_joined`, `player_left`, `game_started` (from rooms.py)
+6. Lobby WS events: `player_joined`, `player_left`, `player_ready`, `game_started`
+7. Score limit (150 or 250) configurable per room
+8. Burn rule: score resets to 0 if it hits exactly `score_limit - 5` (145 or 245)
+9. Ready-based auto-start: game starts automatically when all players mark ready
+10. Alembic async migrations (replaces `create_all` in Docker; `create_all` still used for local dev)
+11. React + TypeScript frontend:
+    - Room list with create/join
+    - Lobby with ready button and live WS updates
+    - Game board: hand, discard pile (last-move cards shown), draw pile
+    - Playing card animations with Framer Motion `layoutId` (cards fly from hand to discard pile)
+    - CSS playing cards with suit symbols and red/black coloring
+12. Docker production setup:
+    - `Dockerfile`: backend with Alembic + uvicorn
+    - `Dockerfile.nginx`: multi-stage frontend build + nginx
+    - `docker-compose.yml`: full stack with healthchecks
 
 ## What's left 🔜
 
-- Alembic migrations (replace `create_all`)
-- 145/245 burn rule in `game._end_round()`
-- Frontend (React or Vue)
+- Deploy to Oracle Cloud (Docker internet access fix needed — iptables FORWARD rules for docker0→ens3)
+- Potential future: more game rules polish, user profiles, chat
 
 ---
 
@@ -556,3 +622,9 @@ Tables auto-created on startup via `create_db_tables()` (`create_all`). No Alemb
 - **Lock scope:** Only `join`, `leave`, `start` re-read inside lock (TOCTOU prevention). `create` and `delete` don't need it.
 
 - **`reset_ws_manager` autouse fixture:** Clears `ws_manager._connections` and `ws_manager._listeners` before and after every test. Without it, background listener tasks from one test bleed into the next.
+
+- **Oracle Cloud iptables blocks container internet:** Default Oracle Cloud iptables has `FORWARD policy: DROP` + `REJECT all` at position 3. Docker's DOCKER chain also has `DROP all`. Together they block outbound container traffic during build (e.g., PyPI unreachable inside container). Fix: `sudo iptables -I FORWARD 1 -i docker0 -o ens3 -j ACCEPT && sudo iptables -I FORWARD 2 -i ens3 -o docker0 -m state --state RELATED,ESTABLISHED -j ACCEPT`. Host internet is unaffected.
+
+- **Docker BuildKit disabled on this server:** `{"features":{"buildkit":false}}` in `/etc/docker/daemon.json` + `DOCKER_BUILDKIT=0` env var. BuildKit repeatedly failed with `DeadlineExceeded` (couldn't pull moby/buildkit image). Legacy builder works fine.
+
+- **DOCKER_BUILDKIT=0 required for compose build:** Use `DOCKER_BUILDKIT=0 docker compose up --build` on this server.
