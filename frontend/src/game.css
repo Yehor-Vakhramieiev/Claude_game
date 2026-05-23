@@ -1,0 +1,306 @@
+/* ─── Playing Card ─────────────────────────────────────────────────────────── */
+
+.playing-card {
+  position: relative;
+  border-radius: 10px;
+  border: 2px solid #ddd;
+  background: #fff;
+  box-shadow: 2px 3px 8px rgba(0, 0, 0, 0.35);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.playing-card.card {
+  width: 72px;
+  height: 108px;
+}
+
+.playing-card.card-small {
+  width: 52px;
+  height: 78px;
+}
+
+.playing-card.red { color: #d32f2f; }
+.playing-card.black { color: #1a1a1a; }
+
+.playing-card.clickable {
+  cursor: pointer;
+  transition: box-shadow 0.15s;
+}
+.playing-card.clickable:hover {
+  box-shadow: 3px 5px 14px rgba(0, 0, 0, 0.5);
+}
+
+.playing-card.selected {
+  border-color: #ffd600;
+  box-shadow: 0 0 0 3px #ffd600, 2px 3px 8px rgba(0, 0, 0, 0.35);
+  background: #fffde7;
+}
+
+.corner {
+  position: absolute;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.1;
+  text-align: center;
+}
+.top-left { top: 5px; left: 5px; }
+.bottom-right { bottom: 5px; right: 5px; transform: rotate(180deg); }
+
+.center-suit {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 28px;
+  line-height: 1;
+}
+
+/* Card back */
+.playing-card.card-back {
+  background: #1565c0;
+  border-color: #90caf9;
+  color: transparent;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.card-back-pattern {
+  position: absolute;
+  inset: 6px;
+  border: 2px solid rgba(144, 202, 249, 0.5);
+  border-radius: 6px;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 6px,
+    rgba(255, 255, 255, 0.08) 6px,
+    rgba(255, 255, 255, 0.08) 12px
+  );
+}
+
+.card-count {
+  position: relative;
+  z-index: 1;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #e3f2fd;
+}
+
+/* ─── Game Layout ──────────────────────────────────────────────────────────── */
+
+.game-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: radial-gradient(ellipse at center, #1b5e20 0%, #0d3b14 100%);
+}
+
+/* Header */
+.game-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: rgba(0, 0, 0, 0.35);
+  flex-shrink: 0;
+}
+
+.scores {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.score-chip {
+  padding: 4px 12px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 0.88rem;
+  color: #cfd8dc;
+}
+.score-chip.active {
+  background: rgba(255, 213, 79, 0.25);
+  color: #ffd54f;
+}
+.score-chip.mine {
+  background: rgba(76, 175, 80, 0.25);
+  color: #a5d6a7;
+}
+
+/* Other players row */
+.other-players {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  padding: 16px;
+  flex-shrink: 0;
+}
+
+.other-player {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.other-player.their-turn {
+  border-color: rgba(255, 213, 79, 0.5);
+  background: rgba(255, 213, 79, 0.08);
+}
+
+/* Center area */
+.center-area {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 32px;
+  flex: 1;
+  padding: 0 16px;
+  min-height: 0;
+}
+
+.pile-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.discard-pile {
+  position: relative;
+  width: 130px;
+  height: 108px;
+}
+
+.center-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  min-width: 120px;
+}
+
+.active-suit {
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 0.9rem;
+  color: #cfd8dc;
+}
+
+/* My hand */
+.my-hand-area {
+  padding: 12px 16px 16px;
+  flex-shrink: 0;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.my-hand {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  min-height: 116px;
+  align-items: flex-end;
+  padding-bottom: 4px;
+}
+
+.hand-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+/* ─── Notification ──────────────────────────────────────────────────────────── */
+
+.notification {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  padding: 10px 22px;
+  border-radius: 24px;
+  font-size: 1rem;
+  z-index: 200;
+  white-space: nowrap;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+/* ─── Suit Picker ──────────────────────────────────────────────────────────── */
+
+.suit-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+}
+
+.suit-picker {
+  background: #163d22;
+  border-radius: 14px;
+  padding: 24px;
+  min-width: 220px;
+  text-align: center;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+.suit-picker p {
+  font-size: 1.1rem;
+  margin-bottom: 16px;
+  color: #cfd8dc;
+}
+
+.suit-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.suit-btn {
+  font-size: 2.2rem;
+  padding: 12px;
+  border-radius: 10px;
+  background: #1a4a2e;
+  border: 2px solid transparent;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.suit-btn:hover { border-color: #ffd600; transform: scale(1.08); }
+.suit-btn.red { color: #ef5350; }
+.suit-btn.black { color: #eceff1; }
+
+/* ─── Modal ─────────────────────────────────────────────────────────────────── */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 400;
+}
+
+.modal {
+  background: #163d22;
+  border-radius: 14px;
+  padding: 28px 32px;
+  min-width: 300px;
+  max-width: 420px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.7);
+}
+
+.modal h2 { margin-bottom: 8px; }
