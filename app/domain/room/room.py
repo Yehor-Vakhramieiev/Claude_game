@@ -10,6 +10,7 @@ class Room(BaseModel):
     name: str
     host_id: str
     max_players: int = Field(default=4, ge=2, le=5)
+    score_limit: int = Field(default=150)
     player_ids: list[str] = Field(default_factory=list)
     game: Game | None = None
 

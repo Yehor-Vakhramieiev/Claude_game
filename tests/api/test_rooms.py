@@ -216,3 +216,35 @@ def test_delete_room(client):
 
     r = client.get(f"/rooms/{room['id']}")
     assert r.status_code == 404
+
+
+# ──────────────────────────────── score_limit ────────────────────────────────
+
+def test_create_room_default_score_limit(client):
+    data = create_room(client)
+    assert data["score_limit"] == 150
+
+
+def test_create_room_with_score_limit_250(client):
+    r = client.post("/rooms", json={"name": "bigroom", "score_limit": 250})
+    assert r.status_code == 201
+    assert r.json()["score_limit"] == 250
+
+
+def test_create_room_invalid_score_limit(client):
+    r = client.post("/rooms", json={"name": "x", "score_limit": 100})
+    assert r.status_code == 422
+
+
+def test_start_game_uses_score_limit(client, fake_redis):
+    r = client.post("/rooms", json={"name": "bigroom", "max_players": 2, "score_limit": 250})
+    room_id = r.json()["id"]
+
+    switch_user(USER2)
+    client.post(f"/rooms/{room_id}/join")
+
+    switch_user(USER1)
+    client.post(f"/rooms/{room_id}/start")
+
+    r = client.get(f"/rooms/{room_id}")
+    assert r.json()["score_limit"] == 250

@@ -383,3 +383,51 @@ def test_scores_accumulate_across_rounds():
     game._end_round(winner_id="1")
     # "2" should get hand value added to existing 30
     assert game.scores["2"] > 30
+
+
+# ------------------------------------------------------------ burn rule
+
+def test_burn_rule_150_limit_resets_score():
+    game = started_game("1", "2")
+    game.max_points = 150
+    # Give player 2 a score that will hit exactly 145 after adding hand value
+    game.player_manager.players["2"].hand = [Card(rank=CardRank.TEN, suit=CardSuit.HEARTS)]  # worth 10
+    game.scores["2"] = 135  # 135 + 10 = 145 → burn to 0
+    game._end_round(winner_id="1")
+    assert game.scores["2"] == 0
+    assert game.status != GameStatus.FINISHED
+
+
+def test_burn_rule_250_limit_resets_score():
+    game = started_game("1", "2")
+    game.max_points = 250
+    game.player_manager.players["2"].hand = [Card(rank=CardRank.TEN, suit=CardSuit.HEARTS)]  # worth 10
+    game.scores["2"] = 235  # 235 + 10 = 245 → burn to 0
+    game._end_round(winner_id="1")
+    assert game.scores["2"] == 0
+    assert game.status != GameStatus.FINISHED
+
+
+def test_burn_rule_does_not_apply_when_score_is_not_threshold():
+    game = started_game("1", "2")
+    game.max_points = 150
+    game.player_manager.players["2"].hand = [Card(rank=CardRank.TEN, suit=CardSuit.HEARTS)]  # worth 10
+    game.scores["2"] = 130  # 130 + 10 = 140 → not 145, no burn
+    game._end_round(winner_id="1")
+    assert game.scores["2"] == 140
+
+
+def test_game_ends_when_score_reaches_250_limit():
+    game = started_game("1", "2")
+    game.max_points = 250
+    game.scores["2"] = 240  # after adding 10 → 250, game ends
+
+    set_top(game, Card(rank=CardRank.TEN, suit=CardSuit.HEARTS))
+    game.player_manager.players["1"].hand.clear()
+    c = Card(rank=CardRank.TEN, suit=CardSuit.SPADES)
+    give_card(game, "1", c)
+
+    game.player_manager.players["2"].hand = [Card(rank=CardRank.TEN, suit=CardSuit.HEARTS)]
+    game.play_cards("1", [c])
+
+    assert game.status == GameStatus.FINISHED

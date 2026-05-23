@@ -173,11 +173,13 @@ class Game(BaseModel):
 
     def _end_round(self, winner_id: str) -> None:
         self.scores.setdefault(winner_id, 0)
+        burn_threshold = self.max_points - 5  # 145 for 150-limit, 245 for 250-limit
         for player_id, player in self.player_manager.players.items():
             if player_id != winner_id:
-                self.scores[player_id] = (
-                    self.scores.get(player_id, 0) + score_hand(player.hand)
-                )
+                new_score = self.scores.get(player_id, 0) + score_hand(player.hand)
+                if new_score == burn_threshold:
+                    new_score = 0
+                self.scores[player_id] = new_score
 
         if any(s >= self.max_points for s in self.scores.values()):
             self.status = GameStatus.FINISHED

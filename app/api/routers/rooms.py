@@ -23,6 +23,7 @@ def _to_response(room: Room) -> RoomResponse:
         host_id=room.host_id,
         player_ids=room.player_ids,
         max_players=room.max_players,
+        score_limit=room.score_limit,
         status=room.status,
     )
 
@@ -38,7 +39,7 @@ async def create_room(
     repo: RoomRepository = Depends(get_room_repo),
 ) -> RoomResponse:
     user_id = str(user.id)
-    room = Room(name=data.name, host_id=user_id, max_players=data.max_players)
+    room = Room(name=data.name, host_id=user_id, max_players=data.max_players, score_limit=data.score_limit)
     room.player_ids.append(user_id)
     await repo.save(room)
     return _to_response(room)
@@ -142,7 +143,7 @@ async def start_game(
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Room not found")
 
         pm = PlayerManager(max_players=room.max_players)
-        game = Game(player_manager=pm)
+        game = Game(player_manager=pm, max_points=room.score_limit)
 
         for player_id in room.player_ids:
             game.join(Player(id=player_id, name=player_id))
